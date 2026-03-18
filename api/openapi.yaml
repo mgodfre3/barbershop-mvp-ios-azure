@@ -1,0 +1,89 @@
+openapi: 3.0.3
+info:
+  title: BarberShop API
+  version: 0.1.0
+servers:
+  - url: https://api.barbershop.example.com
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: OK
+  /auth/register:
+    post:
+      summary: Register customer account
+      responses:
+        '201':
+          description: Created
+  /auth/login:
+    post:
+      summary: Login user account
+      responses:
+        '200':
+          description: OK
+  /services:
+    get:
+      summary: List available services
+      responses:
+        '200':
+          description: Service list
+  /barbers:
+    get:
+      summary: List active barbers
+      responses:
+        '200':
+          description: Barber list
+  /availability:
+    get:
+      summary: Get appointment availability
+      parameters:
+        - in: query
+          name: serviceId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: barberId
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Availability list
+  /appointments:
+    get:
+      summary: List customer appointments
+      responses:
+        '200':
+          description: Appointment list
+    post:
+      summary: Create appointment request
+      responses:
+        '201':
+          description: Created
+  /appointments/{id}:
+    patch:
+      summary: Update appointment status
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Updated
+  /rewards/summary:
+    get:
+      summary: Get rewards summary
+      responses:
+        '200':
+          description: Reward summary
+  /square/webhooks:
+    post:
+      summary: Receive Square webhook events
+      responses:
+        '202':
+          description: Accepted
