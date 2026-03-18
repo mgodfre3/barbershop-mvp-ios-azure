@@ -23,12 +23,15 @@ final class BarberShopUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
+    func testMVPDisplaysCoreTabs() throws {
         // UI tests must launch the application that they test.
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["Book"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Rewards"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Profile"].exists)
     }
 
     @MainActor

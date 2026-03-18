@@ -10,27 +10,53 @@ import XCTest
 
 final class BarberShopTests: XCTestCase {
 
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
+    func testBookableAppointmentRequiresFutureDateAndActiveStatus() {
+        let service = MVPData.preview.services[0]
+        let barber = MVPData.preview.barbers[0]
+
+        let futureAppointment = Appointment(
+            id: UUID(),
+            service: service,
+            barber: barber,
+            startDate: Calendar.current.date(byAdding: .hour, value: 2, to: Date()) ?? Date(),
+            status: .confirmed,
+            notes: ""
+        )
+        let pastAppointment = Appointment(
+            id: UUID(),
+            service: service,
+            barber: barber,
+            startDate: Calendar.current.date(byAdding: .hour, value: -2, to: Date()) ?? Date(),
+            status: .confirmed,
+            notes: ""
+        )
+        let cancelledAppointment = Appointment(
+            id: UUID(),
+            service: service,
+            barber: barber,
+            startDate: Calendar.current.date(byAdding: .hour, value: 3, to: Date()) ?? Date(),
+            status: .cancelled,
+            notes: ""
+        )
+
+        XCTAssertTrue(BookingRules.isBookable(futureAppointment))
+        XCTAssertFalse(BookingRules.isBookable(pastAppointment))
+        XCTAssertFalse(BookingRules.isBookable(cancelledAppointment))
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    func testRewardProgressClampsIntoValidRange() {
+        XCTAssertEqual(BookingRules.progressTowardNextReward(pointsBalance: 120, pointsToNextReward: 30), 0.8, accuracy: 0.001)
+        XCTAssertEqual(BookingRules.progressTowardNextReward(pointsBalance: 0, pointsToNextReward: 0), 0)
+        XCTAssertEqual(BookingRules.progressTowardNextReward(pointsBalance: 400, pointsToNextReward: -50), 1)
     }
 
-    func testExample() throws {
-        // This is an example of a functional test case.
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // Any test you write for XCTest can be annotated as throws and async.
-        // Mark your test throws to produce an unexpected failure when your test encounters an uncaught error.
-        // Mark your test async to allow awaiting for asynchronous code to complete. Check the results with assertions afterwards.
-    }
+    func testPreviewDataContainsCustomerBarbersServicesAndAppointments() {
+        let preview = MVPData.preview
 
-    func testPerformanceExample() throws {
-        // This is an example of a performance test case.
-        self.measure {
-            // Put the code you want to measure the time of here.
-        }
+        XCTAssertFalse(preview.customer.fullName.isEmpty)
+        XCTAssertGreaterThanOrEqual(preview.barbers.count, 2)
+        XCTAssertGreaterThanOrEqual(preview.services.count, 3)
+        XCTAssertFalse(preview.upcomingAppointments.isEmpty)
+        XCTAssertEqual(preview.rewards.tier, preview.customer.loyaltyTier)
     }
-
 }
