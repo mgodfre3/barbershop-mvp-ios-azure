@@ -202,7 +202,11 @@ private struct BookingView: View {
     @State private var bookingError: String?
     @State private var paymentSuccess = false
     @State private var lastBookedAppointmentId: String?
+    @State private var availableSlots: [AvailabilitySlot] = []
+    @State private var selectedSlot: AvailabilitySlot?
+    @State private var isLoadingSlots = false
 
+    private let availabilityRepo: AvailabilityRepository = APIAvailabilityRepository(client: APIClient())
     private let paymentRepo: PaymentRepository = APIPaymentRepository(client: APIClient())
 
     var body: some View {
@@ -230,16 +234,40 @@ private struct BookingView: View {
                         .lineLimit(2...4)
                 }
 
-                Section("Next available") {
-                    ForEach(recommendedAppointments) { appointment in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("\(appointment.service.name) with \(appointment.barber.name)")
-                                .font(.subheadline.weight(.semibold))
-                            Text(appointment.startDate, format: Date.FormatStyle(date: .abbreviated, time: .shortened))
-                                .foregroundStyle(.secondary)
-                            Text(appointment.notes)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                Section("Available times") {
+                    if isLoadingSlots {
+                        ProgressView("Checking availability…")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    } else if availableSlots.isEmpty {
+                        Text("No slots available. Try a different barber or service.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(slotsByDate, id: \.date) { group in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(group.displayDate)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                FlowLayout(spacing: 8) {
+                                    ForEach(group.slots) { slot in
+                                        Button {
+                                            selectedSlot = slot
+                                        } label: {
+                                            VStack(spacing: 2) {
+                                                Text(slot.startDate, format: .dateTime.hour().minute())
+                                                    .font(.subheadline.weight(.medium))
+                                                Text(slot.barberName)
+                                                    .font(.caption2)
+                                            }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 8)
+                                            .background(selectedSlot?.id == slot.id ? Color.brown : Color.brown.opacity(0.1))
+                                            .foregroundStyle(selectedSlot?.id == slot.id ? .white : .primary)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -256,7 +284,7 @@ private struct BookingView: View {
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }
-                    .disabled(selectedServiceID == nil || viewModel.isLoading)
+                    .disabled(selectedSlot == nil || viewModel.isLoading)
                 }
             }
             .navigationTitle("Book Appointment")
@@ -264,6 +292,9 @@ private struct BookingView: View {
                 selectedBarberID = data.customer.preferredBarberID
                 selectedServiceID = data.services.first?.id
             }
+            .onChange(of: selectedServiceID) { loadSlots() }
+            .onChange(of: selectedBarberID) { loadSlots() }
+            .task { loadSlots() }
             .alert("Appointment Requested!", isPresented: $showConfirmation) {
                 Button("Pay Now") { showCardEntry = true }
                 Button("Pay Later", role: .cancel) {}
@@ -295,29 +326,95 @@ private struct BookingView: View {
         }
     }
 
-    private var selectedServicePrice: Decimal {
-        filteredService?.price ?? 0
+    // MARK: - Slot grouping
+
+    private struct DateGroup: Hashable {
+        let date: String
+        let displayDate: String
+        let slots: [AvailabilitySlot]
     }
 
-    private func bookAppointment() async {
+    private var slotsByDate: [DateGroup] {
+        let grouped = Dictionary(grouping: availableSlots, by: \.date)
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+
+        let displayFormatter = DateFormatter()
+        displayFormatter.dateStyle = .medium
+
+        return grouped.keys.sorted().prefix(5).map { dateStr in
+            let display = dateFormatter.date(from: dateStr).map { displayFormatter.string(from: $0) } ?? dateStr
+            return DateGroup(date: dateStr, displayDate: display, slots: grouped[dateStr] ?? [])
+        }
+    }
+
+    // MARK: - Data loading
+
+    private func loadSlots() {
         guard let serviceID = selectedServiceID else { return }
 
-        let barberID = selectedBarberID ?? data.barbers.first(where: { $0.isAvailableToday })?.id ?? data.barbers.first?.id
-        guard let barberID else { return }
+        Task {
+            isLoadingSlots = true
+            selectedSlot = nil
+            do {
+                let slots = try await availabilityRepo.fetchSlots(
+                    serviceId: findAPIServiceId(for: serviceID),
+                    barberId: selectedBarberID.flatMap { findAPIBarberId(for: $0) },
+                    days: 7
+                )
+                availableSlots = slots
+            } catch {
+                availableSlots = []
+            }
+            isLoadingSlots = false
+        }
+    }
 
-        let slot = recommendedAppointments.first(where: { $0.barber.id == barberID })
-        let startDate = slot?.startDate ?? Calendar.current.date(byAdding: .hour, value: 24, to: Date()) ?? Date()
+    private func findAPIServiceId(for uuid: UUID) -> String {
+        let name = data.services.first(where: { $0.id == uuid })?.name ?? ""
+        switch name {
+        case "Classic Cut": return "svc-classic"
+        case "Beard Trim": return "svc-beard"
+        case "Premium Package": return "svc-premium"
+        default: return uuid.uuidString
+        }
+    }
+
+    private func findAPIBarberId(for uuid: UUID) -> String {
+        let name = data.barbers.first(where: { $0.id == uuid })?.name ?? ""
+        switch name {
+        case "Jordan": return "barber-jordan"
+        case "Alex": return "barber-alex"
+        default: return uuid.uuidString
+        }
+    }
+
+    private var selectedServicePrice: Decimal {
+        data.services.first(where: { $0.id == selectedServiceID })?.price ?? 0
+    }
+
+    // MARK: - Actions
+
+    private func bookAppointment() async {
+        guard let slot = selectedSlot,
+              let serviceID = selectedServiceID else { return }
+
+        let barberID = data.barbers.first(where: { $0.name == slot.barberName })?.id
+            ?? data.barbers.first?.id
+        guard let barberID else { return }
 
         do {
             try await viewModel.requestAppointment(
                 barberId: barberID,
                 serviceId: serviceID,
-                startDate: startDate,
+                startDate: slot.startDate,
                 notes: notes
             )
             lastBookedAppointmentId = data.upcomingAppointments.last?.id.uuidString
             notes = ""
+            selectedSlot = nil
             showConfirmation = true
+            loadSlots()
         } catch {
             bookingError = error.localizedDescription
         }
@@ -337,32 +434,46 @@ private struct BookingView: View {
             bookingError = error.localizedDescription
         }
     }
+}
 
-    private var filteredBarber: Barber? {
-        guard let selectedBarberID else { return nil }
-        return data.barbers.first(where: { $0.id == selectedBarberID })
+// Simple flow layout for slot buttons
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        return result.size
     }
 
-    private var filteredService: ServiceMenuItem? {
-        guard let selectedServiceID else { return data.services.first }
-        return data.services.first(where: { $0.id == selectedServiceID })
-    }
-
-    private var recommendedAppointments: [Appointment] {
-        let service = filteredService ?? data.services[0]
-        let candidateBarbers = filteredBarber.map { [$0] } ?? data.barbers
-
-        return candidateBarbers.enumerated().map { index, barber in
-            Appointment(
-                id: UUID(),
-                service: service,
-                barber: barber,
-                startDate: Calendar.current.date(byAdding: .hour, value: 24 + (index * 2), to: Date()) ?? Date(),
-                status: .requested,
-                notes: barber.isAvailableToday ? "Recommended based on current availability." : "Good fit based on your selected service."
-            )
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrange(proposal: proposal, subviews: subviews)
+        for (index, offset) in result.offsets.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + offset.x, y: bounds.minY + offset.y), proposal: .unspecified)
         }
-        .filter(BookingRules.isBookable)
+    }
+
+    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (offsets: [CGPoint], size: CGSize) {
+        let maxWidth = proposal.width ?? .infinity
+        var offsets: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxX: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > maxWidth, x > 0 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            offsets.append(CGPoint(x: x, y: y))
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+            maxX = max(maxX, x)
+        }
+
+        return (offsets, CGSize(width: maxX, height: y + rowHeight))
     }
 }
 

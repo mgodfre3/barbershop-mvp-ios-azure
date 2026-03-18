@@ -93,6 +93,16 @@ struct RewardSummary: Hashable {
     var recentActivity: [RewardActivity]
 }
 
+struct AvailabilitySlot: Identifiable, Hashable {
+    let id: String       // barberId + startAt for uniqueness
+    let barberId: String
+    let barberName: String
+    let serviceId: String
+    let date: String     // YYYY-MM-DD
+    let startDate: Date
+    let endDate: Date
+}
+
 struct MVPData {
     let customer: CustomerProfile
     let barbers: [Barber]
