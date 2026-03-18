@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import { z } from "zod";
 import { squareClient } from "./square-client.js";
+import type { Currency } from "square";
 import {
   mockAppointments,
   mockBarbers,
@@ -206,16 +207,73 @@ app.post("/customers/sync", async (req, res) => {
 // ============================================================================
 // PAYMENTS (Square is source of truth)
 // ============================================================================
-// Payments are processed through Square's Payments API (via In-App Payments SDK).
-// This endpoint is for payment status queries and linking to appointments.
-app.get("/payments/:squarePaymentId", async (req, res) => {
-  // TODO: In production, call paymentsApi.retrievePayment(req.params.squarePaymentId)
-
-  res.json({
-    message: "Payment lookup scaffolded",
-    squarePaymentId: req.params.squarePaymentId,
-    placeholder: true,
+// Process payments via Square's Payments API using a nonce from the In-App Payments SDK.
+app.post("/payments/process", async (req, res) => {
+  const bodySchema = z.object({
+    nonce: z.string().min(1),
+    amount: z.number().positive(),
+    currency: z.string().length(3).default("USD"),
+    appointmentId: z.string().optional(),
+    customerId: z.string().optional(),
   });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  const { nonce, amount, currency, appointmentId, customerId } = parsed.data;
+  const idempotencyKey = `${appointmentId ?? "anon"}-${Date.now()}`;
+
+  try {
+    const locationId = process.env.SQUARE_LOCATION_ID || "LJJWSM6MHA21M";
+    const payment = await squareClient.payments.create({
+      sourceId: nonce,
+      idempotencyKey,
+      amountMoney: {
+        amount: BigInt(Math.round(amount * 100)),
+        currency: currency as Currency,
+      },
+      locationId,
+      note: appointmentId ? `Appointment: ${appointmentId}` : undefined,
+    });
+
+    return res.status(201).json({
+      ok: true,
+      squarePaymentId: payment.payment?.id,
+      status: payment.payment?.status,
+      amount: parsed.data.amount,
+      currency,
+      appointmentId,
+    });
+  } catch (error: any) {
+    return res.status(502).json({
+      ok: false,
+      message: "Payment processing failed",
+      errorType: error?.name ?? "UnknownError",
+      errorMessage: error?.message ?? "No message",
+    });
+  }
+});
+
+// Payment status lookup
+app.get("/payments/:squarePaymentId", async (req, res) => {
+  try {
+    const payment = await squareClient.payments.get({ paymentId: req.params.squarePaymentId });
+    return res.json({
+      ok: true,
+      squarePaymentId: payment.payment?.id,
+      status: payment.payment?.status,
+      amount: payment.payment?.amountMoney,
+    });
+  } catch (error: any) {
+    return res.status(502).json({
+      ok: false,
+      message: "Payment lookup failed",
+      errorType: error?.name ?? "UnknownError",
+      errorMessage: error?.message ?? "No message",
+    });
+  }
 });
 
 // ============================================================================

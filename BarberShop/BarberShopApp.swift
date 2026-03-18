@@ -7,9 +7,14 @@
 
 import SwiftUI
 import SwiftData
+import SquareInAppPaymentsSDK
 
 @main
 struct BarberShopApp: App {
+    init() {
+        SQIPInAppPaymentsSDK.squareApplicationID = "sq0idp-rVH2MiAbH0PGniY6PwyIZA"
+    }
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             AppSession.self,

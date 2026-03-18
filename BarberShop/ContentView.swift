@@ -198,7 +198,12 @@ private struct BookingView: View {
     @State private var selectedServiceID: UUID?
     @State private var notes: String = ""
     @State private var showConfirmation = false
+    @State private var showCardEntry = false
     @State private var bookingError: String?
+    @State private var paymentSuccess = false
+    @State private var lastBookedAppointmentId: String?
+
+    private let paymentRepo: PaymentRepository = APIPaymentRepository(client: APIClient())
 
     var body: some View {
         NavigationStack {
@@ -260,9 +265,15 @@ private struct BookingView: View {
                 selectedServiceID = data.services.first?.id
             }
             .alert("Appointment Requested!", isPresented: $showConfirmation) {
-                Button("OK") {}
+                Button("Pay Now") { showCardEntry = true }
+                Button("Pay Later", role: .cancel) {}
             } message: {
-                Text("Your appointment has been submitted. You'll receive a confirmation once it's approved.")
+                Text("Your appointment has been submitted. Would you like to pay now?")
+            }
+            .alert("Payment Successful!", isPresented: $paymentSuccess) {
+                Button("Done") {}
+            } message: {
+                Text("Your payment has been processed through Square.")
             }
             .alert("Booking Failed", isPresented: .init(
                 get: { bookingError != nil },
@@ -272,7 +283,20 @@ private struct BookingView: View {
             } message: {
                 Text(bookingError ?? "Something went wrong. Please try again.")
             }
+            .sheet(isPresented: $showCardEntry) {
+                CardEntryView(
+                    amount: selectedServicePrice,
+                    onNonceReceived: { nonce in
+                        Task { await processPayment(nonce: nonce) }
+                    },
+                    onCancel: { showCardEntry = false }
+                )
+            }
         }
+    }
+
+    private var selectedServicePrice: Decimal {
+        filteredService?.price ?? 0
     }
 
     private func bookAppointment() async {
@@ -291,8 +315,24 @@ private struct BookingView: View {
                 startDate: startDate,
                 notes: notes
             )
+            lastBookedAppointmentId = data.upcomingAppointments.last?.id.uuidString
             notes = ""
             showConfirmation = true
+        } catch {
+            bookingError = error.localizedDescription
+        }
+    }
+
+    private func processPayment(nonce: String) async {
+        showCardEntry = false
+        do {
+            _ = try await paymentRepo.processPayment(
+                nonce: nonce,
+                amount: selectedServicePrice,
+                customerId: data.customer.id.uuidString,
+                appointmentId: lastBookedAppointmentId ?? ""
+            )
+            paymentSuccess = true
         } catch {
             bookingError = error.localizedDescription
         }
