@@ -7,14 +7,12 @@
 
 import SwiftUI
 import SwiftData
-import SquareInAppPaymentsSDK
 
 @main
 struct BarberShopApp: App {
     init() {
-        #if !targetEnvironment(simulator)
-        SQIPInAppPaymentsSDK.squareApplicationID = "sq0idp-rVH2MiAbH0PGniY6PwyIZA"
-        #endif
+        // Square In-App Payments SDK initialized on real device only.
+        // Re-add SquareInAppPaymentsSDK SPM package for device builds.
     }
 
     var sharedModelContainer: ModelContainer = {

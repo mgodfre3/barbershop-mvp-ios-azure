@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		EE8D3B672F6A4A6300026864 /* SquareInAppPaymentsSDK in Frameworks */ = {isa = PBXBuildFile; productRef = AA000002000000000000000B /* SquareInAppPaymentsSDK */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -69,7 +68,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				EE8D3B672F6A4A6300026864 /* SquareInAppPaymentsSDK in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -130,7 +128,6 @@
 			);
 			name = BarberShop;
 			packageProductDependencies = (
-				AA000002000000000000000B /* SquareInAppPaymentsSDK */,
 			);
 			productName = BarberShop;
 			productReference = EE8D3AB42F6A1C3900026864 /* BarberShop.app */;
@@ -215,7 +212,6 @@
 			mainGroup = EE8D3AAB2F6A1C3800026864;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AA000001000000000000000A /* XCRemoteSwiftPackageReference "in-app-payments-ios" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EE8D3AB52F6A1C3900026864 /* Products */;
