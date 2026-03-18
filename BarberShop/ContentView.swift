@@ -18,7 +18,7 @@ struct ContentView: View {
                     Label("Home", systemImage: "house.fill")
                 }
 
-            BookingView(data: viewModel.data)
+            BookingView(data: viewModel.data, viewModel: viewModel)
                 .tabItem {
                     Label("Book", systemImage: "calendar.badge.plus")
                 }
@@ -193,8 +193,12 @@ private struct HomeView: View {
 
 private struct BookingView: View {
     let data: MVPData
+    @ObservedObject var viewModel: MVPScreenViewModel
     @State private var selectedBarberID: UUID?
     @State private var selectedServiceID: UUID?
+    @State private var notes: String = ""
+    @State private var showConfirmation = false
+    @State private var bookingError: String?
 
     var body: some View {
         NavigationStack {
@@ -216,6 +220,11 @@ private struct BookingView: View {
                     }
                 }
 
+                Section("Notes for your barber") {
+                    TextField("e.g. Keep the top textured", text: $notes, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+
                 Section("Next available") {
                     ForEach(recommendedAppointments) { appointment in
                         VStack(alignment: .leading, spacing: 6) {
@@ -231,10 +240,18 @@ private struct BookingView: View {
                 }
 
                 Section {
-                    Button("Request Appointment") {}
-                        .frame(maxWidth: .infinity, alignment: .center)
-                } footer: {
-                    Text("MVP note: this screen is backed by local sample data now. The Azure API will validate live availability, create appointments, and trigger notifications.")
+                    Button {
+                        Task { await bookAppointment() }
+                    } label: {
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        } else {
+                            Text("Request Appointment")
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                    }
+                    .disabled(selectedServiceID == nil || viewModel.isLoading)
                 }
             }
             .navigationTitle("Book Appointment")
@@ -242,6 +259,42 @@ private struct BookingView: View {
                 selectedBarberID = data.customer.preferredBarberID
                 selectedServiceID = data.services.first?.id
             }
+            .alert("Appointment Requested!", isPresented: $showConfirmation) {
+                Button("OK") {}
+            } message: {
+                Text("Your appointment has been submitted. You'll receive a confirmation once it's approved.")
+            }
+            .alert("Booking Failed", isPresented: .init(
+                get: { bookingError != nil },
+                set: { if !$0 { bookingError = nil } }
+            )) {
+                Button("OK") {}
+            } message: {
+                Text(bookingError ?? "Something went wrong. Please try again.")
+            }
+        }
+    }
+
+    private func bookAppointment() async {
+        guard let serviceID = selectedServiceID else { return }
+
+        let barberID = selectedBarberID ?? data.barbers.first(where: { $0.isAvailableToday })?.id ?? data.barbers.first?.id
+        guard let barberID else { return }
+
+        let slot = recommendedAppointments.first(where: { $0.barber.id == barberID })
+        let startDate = slot?.startDate ?? Calendar.current.date(byAdding: .hour, value: 24, to: Date()) ?? Date()
+
+        do {
+            try await viewModel.requestAppointment(
+                barberId: barberID,
+                serviceId: serviceID,
+                startDate: startDate,
+                notes: notes
+            )
+            notes = ""
+            showConfirmation = true
+        } catch {
+            bookingError = error.localizedDescription
         }
     }
 
