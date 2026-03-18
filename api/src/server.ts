@@ -1,7 +1,7 @@
-udimport cors from "cors";
+import cors from "cors";
 import express from "express";
 import { z } from "zod";
-import { customersApi, catalogApi, ordersApi, loyaltyApi } from "./square-client.js";
+import { squareClient } from "./square-client.js";
 import {
   mockAppointments,
   mockBarbers,
@@ -27,6 +27,31 @@ app.get("/health", (_req, res) => {
     architecture: "Square-first with Azure custom logic",
     timestamp: new Date().toISOString()
   });
+});
+
+// ============================================================================
+// SQUARE DIAGNOSTICS (sandbox auth verification)
+// ============================================================================
+app.get("/square/diagnostics", async (_req, res) => {
+  try {
+    const response = await squareClient.locations.list();
+    const locations = response.locations ?? [];
+    return res.json({
+      ok: true,
+      environment: process.env.NODE_ENV === "production" ? "production" : "sandbox",
+      locationCount: locations.length,
+      locationIds: locations.map((l) => l.id).filter(Boolean),
+      message: "Square credentials are valid.",
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      environment: process.env.NODE_ENV === "production" ? "production" : "sandbox",
+      message: "Square credentials failed.",
+      errorType: error?.name ?? "UnknownError",
+      errorMessage: error?.message ?? "No message",
+    });
+  }
 });
 
 // ============================================================================
