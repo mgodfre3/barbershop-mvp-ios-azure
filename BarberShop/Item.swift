@@ -97,7 +97,7 @@ struct MVPData {
     let customer: CustomerProfile
     let barbers: [Barber]
     let services: [ServiceMenuItem]
-    let upcomingAppointments: [Appointment]
+    var upcomingAppointments: [Appointment]
     let rewards: RewardSummary
 
     static let preview: MVPData = {

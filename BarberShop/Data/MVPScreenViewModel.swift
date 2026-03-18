@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 @MainActor
@@ -11,15 +12,16 @@ final class MVPScreenViewModel: ObservableObject {
     private let rewardsRepository: RewardsRepository
 
     init(
-        servicesRepository: ServicesRepository = MockServicesRepository(),
-        barbersRepository: BarbersRepository = MockBarbersRepository(),
-        appointmentsRepository: AppointmentsRepository = MockAppointmentsRepository(),
-        rewardsRepository: RewardsRepository = MockRewardsRepository()
+        servicesRepository: ServicesRepository? = nil,
+        barbersRepository: BarbersRepository? = nil,
+        appointmentsRepository: AppointmentsRepository? = nil,
+        rewardsRepository: RewardsRepository? = nil
     ) {
-        self.servicesRepository = servicesRepository
-        self.barbersRepository = barbersRepository
-        self.appointmentsRepository = appointmentsRepository
-        self.rewardsRepository = rewardsRepository
+        let client = APIClient()
+        self.servicesRepository = servicesRepository ?? APIServicesRepository(client: client)
+        self.barbersRepository = barbersRepository ?? APIBarbersRepository(client: client)
+        self.appointmentsRepository = appointmentsRepository ?? APIAppointmentsRepository(client: client)
+        self.rewardsRepository = rewardsRepository ?? APIRewardsRepository(client: client)
     }
 
     func load() async {
@@ -32,7 +34,7 @@ final class MVPScreenViewModel: ObservableObject {
             async let appointments = appointmentsRepository.fetchAppointments()
             async let rewards = rewardsRepository.fetchRewardSummary()
 
-            let (svc, bar, apt, rwd) = await (services, barbers, appointments, rewards)
+            let (svc, bar, apt, rwd) = try await (services, barbers, appointments, rewards)
 
             data = MVPData(
                 customer: MVPData.preview.customer,
