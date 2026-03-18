@@ -9,31 +9,34 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    private let data = MVPData.preview
+    @StateObject private var viewModel = MVPScreenViewModel()
 
     var body: some View {
         TabView {
-            HomeView(data: data)
+            HomeView(data: viewModel.data)
                 .tabItem {
                     Label("Home", systemImage: "house.fill")
                 }
 
-            BookingView(data: data)
+            BookingView(data: viewModel.data)
                 .tabItem {
                     Label("Book", systemImage: "calendar.badge.plus")
                 }
 
-            RewardsView(summary: data.rewards)
+            RewardsView(summary: viewModel.data.rewards)
                 .tabItem {
                     Label("Rewards", systemImage: "star.fill")
                 }
 
-            ProfileView(customer: data.customer, preferredBarber: data.barbers.first { $0.id == data.customer.preferredBarberID })
+            ProfileView(customer: viewModel.data.customer, preferredBarber: viewModel.data.barbers.first { $0.id == viewModel.data.customer.preferredBarberID })
                 .tabItem {
                     Label("Profile", systemImage: "person.crop.circle")
                 }
         }
         .tint(.brown)
+        .task {
+            await viewModel.load()
+        }
     }
 }
 

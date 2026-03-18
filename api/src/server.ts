@@ -1,13 +1,14 @@
-import cors from "cors";
+udimport cors from "cors";
 import express from "express";
 import { z } from "zod";
+import { customersApi, catalogApi, ordersApi, loyaltyApi } from "./square-client.js";
 import {
   mockAppointments,
   mockBarbers,
   mockRewards,
   mockServices,
   type Appointment,
-  type AppointmentStatus
+  type AppointmentStatus,
 } from "./models.js";
 
 const app = express();
@@ -16,22 +17,66 @@ const port = Number(process.env.PORT ?? 8080);
 app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
 app.use(express.json());
 
+// ============================================================================
+// HEALTH CHECK
+// ============================================================================
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "barbershop-api", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    service: "barbershop-api",
+    architecture: "Square-first with Azure custom logic",
+    timestamp: new Date().toISOString()
+  });
 });
 
+// ============================================================================
+// AUTHENTICATION (Placeholder for Entra External ID)
+// ============================================================================
+app.post("/auth/register", (_req, res) => {
+  res.status(201).json({
+    message: "Registration scaffolded. Wire to Microsoft Entra External ID.",
+    placeholder: true
+  });
+});
+
+app.post("/auth/login", (_req, res) => {
+  res.json({
+    message: "Login scaffolded. Wire to Microsoft Entra External ID.",
+    placeholder: true
+  });
+});
+
+// ============================================================================
+// CATALOG (Square is source of truth)
+// ============================================================================
+// In production, fetch from Square's Catalog API and sync to cache.
+// For MVP, return mock data. Real implementation would call catalogApi.
 app.get("/services", (_req, res) => {
+  // TODO: Call catalogApi.listCatalog() to fetch real services from Square
   res.json(mockServices);
 });
 
+// ============================================================================
+// BARBERS (Azure-owned: barbershop-specific metadata)
+// ============================================================================
+// Barber roster with work hours, specialties, and scheduling rules
+// This is NOT in Square; it's custom barbershop domain logic.
 app.get("/barbers", (_req, res) => {
   res.json(mockBarbers);
 });
 
+// ============================================================================
+// AVAILABILITY (Azure-owned: scheduling engine)
+// ============================================================================
+// Compute available slots based on:
+// - Barber work hours (from /barbers endpoint)
+// - Existing appointments (from Azure DB)
+// - Service duration (from Square Catalog)
+// Square has Bookings API but doesn't handle our custom barber assignment logic.
 app.get("/availability", (req, res) => {
   const querySchema = z.object({
     serviceId: z.string().min(1),
-    barberId: z.string().optional()
+    barberId: z.string().optional(),
   });
 
   const parsed = querySchema.safeParse(req.query);
@@ -44,12 +89,17 @@ app.get("/availability", (req, res) => {
   const slots = candidates.map((barber, index) => ({
     barberId: barber.id,
     serviceId,
-    startAt: new Date(Date.now() + (24 + index * 2) * 60 * 60 * 1000).toISOString()
+    startAt: new Date(Date.now() + (24 + index * 2) * 60 * 60 * 1000).toISOString(),
   }));
 
   return res.json(slots);
 });
 
+// ============================================================================
+// APPOINTMENTS (Azure-owned: barbershop-specific workflow)
+// ============================================================================
+// Track appointment lifecycle (requested → confirmed → completed → cancelled)
+// This is custom barber business logic, not Square's generic Bookings.
 app.get("/appointments", (_req, res) => {
   res.json(mockAppointments);
 });
@@ -60,7 +110,7 @@ app.post("/appointments", (req, res) => {
     barberId: z.string().min(1),
     serviceId: z.string().min(1),
     startAt: z.string().datetime(),
-    notes: z.string().optional()
+    notes: z.string().optional(),
   });
 
   const parsed = bodySchema.safeParse(req.body);
@@ -71,16 +121,18 @@ app.post("/appointments", (req, res) => {
   const appointment: Appointment = {
     id: `appt-${mockAppointments.length + 1}`,
     status: "requested",
-    ...parsed.data
+    ...parsed.data,
   };
   mockAppointments.push(appointment);
 
   return res.status(201).json(appointment);
 });
 
+// ...existing code...
+
 app.patch("/appointments/:id", (req, res) => {
   const bodySchema = z.object({
-    status: z.enum(["requested", "confirmed", "completed", "cancelled"])
+    status: z.enum(["requested", "confirmed", "completed", "cancelled"]),
   });
 
   const parsed = bodySchema.safeParse(req.body);
@@ -97,28 +149,156 @@ app.patch("/appointments/:id", (req, res) => {
   return res.json(appointment);
 });
 
+// ============================================================================
+// CUSTOMERS (Square is source of truth)
+// ============================================================================
+// Customers are synced to Square via this endpoint.
+// In production, POST here triggers a sync to Square's Customers API.
+app.post("/customers/sync", async (req, res) => {
+  const bodySchema = z.object({
+    id: z.string(),
+    givenName: z.string(),
+    familyName: z.string(),
+    emailAddress: z.string().email().optional(),
+    phoneNumber: z.string().optional(),
+  });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  // TODO: In production, call customersApi.createCustomer() or updateCustomer()
+  // to sync this customer to Square.
+
+  return res.status(201).json({
+    message: "Customer sync queued for Square",
+    squareCustomerId: `cust_${parsed.data.id}`,
+    placeholder: true,
+  });
+});
+
+// ============================================================================
+// PAYMENTS (Square is source of truth)
+// ============================================================================
+// Payments are processed through Square's Payments API (via In-App Payments SDK).
+// This endpoint is for payment status queries and linking to appointments.
+app.get("/payments/:squarePaymentId", async (req, res) => {
+  // TODO: In production, call paymentsApi.retrievePayment(req.params.squarePaymentId)
+
+  res.json({
+    message: "Payment lookup scaffolded",
+    squarePaymentId: req.params.squarePaymentId,
+    placeholder: true,
+  });
+});
+
+// ============================================================================
+// REWARDS (Azure-owned: custom barbershop loyalty logic)
+// ============================================================================
+// Rewards are custom to this barbershop: points for visits, tiers, redemptions.
+// Square has a Loyalty API, but we use custom logic for barber-specific rewards.
 app.get("/rewards/summary", (_req, res) => {
+  // TODO: In production, fetch from Azure SQL rewards table
   res.json(mockRewards);
 });
 
-app.post("/square/webhooks", (req, res) => {
-  const signature = req.header("x-square-signature");
-  if (!signature) {
-    return res.status(400).json({ error: "Missing Square signature" });
+app.post("/rewards/ledger", (req, res) => {
+  const bodySchema = z.object({
+    customerId: z.string(),
+    appointmentId: z.string(),
+    pointsDelta: z.number().int(),
+    reason: z.string(),
+  });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  return res.status(202).json({ received: true, eventType: req.body?.type ?? "unknown" });
+  // TODO: In production, append immutable ledger entry to Azure SQL
+
+  return res.status(201).json({
+    message: "Reward ledger entry created",
+    ...parsed.data,
+    createdAt: new Date().toISOString(),
+  });
 });
 
-app.post("/auth/register", (_req, res) => {
-  res.status(201).json({ message: "Registration endpoint scaffolded" });
+// ============================================================================
+// SQUARE WEBHOOK HANDLER
+// ============================================================================
+// Receive events from Square (payments, orders, customers) and trigger
+// barbershop-specific workflows (update appointment status, award points, etc.).
+app.post("/square/webhooks", (req, res) => {
+  const signature = req.header("x-square-hmac-sha256");
+
+  if (!signature) {
+    return res.status(400).json({ error: "Missing Square signature header" });
+  }
+
+  // TODO: Verify signature using SQUARE_WEBHOOK_SIGNATURE_KEY
+
+  const eventType = req.body?.type;
+  const data = req.body?.data;
+
+  // Route to specific handlers based on Square event type
+  if (eventType === "payment.created" || eventType === "payment.updated") {
+    console.log("📱 Square payment event:", eventType, data);
+    // TODO: Call /rewards/ledger to award points
+    // TODO: Call /appointments/:id PATCH to mark as completed
+  } else if (eventType === "order.created" || eventType === "order.updated") {
+    console.log("📦 Square order event:", eventType, data);
+    // TODO: Sync order status back to appointment
+  } else if (eventType === "customer.created" || eventType === "customer.updated") {
+    console.log("👤 Square customer event:", eventType, data);
+    // TODO: Store Square customer ID mapping in Azure SQL
+  }
+
+  return res.status(202).json({
+    received: true,
+    eventType,
+    message: "Square webhook received and queued for processing",
+  });
 });
 
-app.post("/auth/login", (_req, res) => {
-  res.json({ message: "Login endpoint scaffolded" });
+// ============================================================================
+// CRM NOTES (Azure-owned: barbershop-specific customer history)
+// ============================================================================
+// Store internal notes about customers: no-show status, preferences, follow-ups.
+app.post("/crm/notes", (req, res) => {
+  const bodySchema = z.object({
+    customerId: z.string(),
+    note: z.string(),
+    tags: z.array(z.string()).optional(),
+  });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  // TODO: In production, append to Azure SQL crm_notes table
+
+  return res.status(201).json({
+    message: "CRM note created",
+    ...parsed.data,
+    createdAt: new Date().toISOString(),
+  });
 });
 
+// ============================================================================
+// Start server
+// ============================================================================
 app.listen(port, () => {
   // eslint-disable-next-line no-console
-  console.log(`barbershop-api listening on port ${port}`);
+  console.log(`🚀 barbershop-api (Square-first) listening on port ${port}`);
+  // eslint-disable-next-line no-console
+  console.log(`
+Architecture:
+  Square owns:     Customers, Catalog/Services, Payments, Orders
+  Azure owns:      Scheduling, Appointments, Rewards Ledger, CRM
+  iOS uses:        Square In-App Payments SDK for card entry
+  Webhooks from:   Square → this API → trigger reward/appointment updates
+  `);
 });

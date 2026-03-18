@@ -1,103 +1,115 @@
 # BarberShop MVP
 
-Azure-first MVP for a barbershop platform with an iOS customer app, cloud backend, admin portal, CRM, scheduling, rewards, and Square POS integration.
+Square-first MVP for a barbershop platform with an iOS customer app powered by Square APIs, Azure backend for custom scheduling and rewards, admin portal, CRM, and POS integration.
+
+## Architecture: What Square Owns vs. What Azure Owns
+
+This is **NOT** a from-scratch payment/POS system. We leverage Square as the system of record for commerce, and Azure as the system of record for barbershop-specific logic.
+
+### Square Owns (✅ Ready to Use)
+- ✅ **Customers API** — Customer profiles, contact info, segments
+- ✅ **Catalog API** — Services, pricing, inventory
+- ✅ **Payments API** — Payment processing, receipts
+- ✅ **Orders API** — Order creation, fulfillment tracking
+- ✅ **Loyalty API** — (Generic loyalty; we build custom barbershop loyalty in Azure)
+- ✅ **Webhooks** — Real-time events for payments, orders, customers
+
+### Azure Owns (🔧 Custom Barbershop Logic)
+- 🔧 **Appointment Scheduling** — Barber work hours, slot availability, conflict prevention
+- 🔧 **Appointment Workflow** — requested → confirmed → completed → cancelled states
+- 🔧 **CRM** — Customer notes, tags, no-show tracking, follow-ups
+- 🔧 **Rewards Ledger** — Barbershop-specific points accrual (per visit, per barber, per service), tiers, redemptions
+- 🔧 **Business Rules** — Cancellation policies, appointment buffers, barber assignment logic
 
 ## Current repo status
 
-This repository currently contains the iOS client MVP shell built with:
+This repository now contains:
 
-- SwiftUI
-- SwiftData for lightweight local state and future caching
-- XCTest and XCUITest
+- **`BarberShop/`** — SwiftUI iOS app with sample data + repository pattern (ready to wire to Square + Azure APIs)
+- **`api/`** — Express.js backend (Square SDK client + Azure business logic)
+- **`admin-web/`** — Next.js admin portal scaffold (future: wire to APIs)
+- **`infra/`** — Azure Bicep IaC for App Service, SQL, Key Vault, monitoring
 
-The app now includes:
+## Data Flow Example: Book & Pay
 
-- Home dashboard
-- Booking tab
-- Rewards tab
-- Profile tab
-- Mock customer, barber, service, appointment, and rewards data
+```
+1. Customer searches barbers/services in iOS app
+   └─ iOS calls /barbers and /services (populated from Square Catalog)
+
+2. Customer selects barber + service + time
+   └─ iOS calls /availability (Azure computes slots from barber schedules)
+
+3. Customer requests appointment
+   └─ iOS calls POST /appointments (Azure stores request)
+
+4. Barber/admin approves appointment (via admin portal or Square)
+   └─ Admin calls PATCH /appointments/:id { status: "confirmed" }
+
+5. Customer arrives, barber completes service
+   └─ Admin calls PATCH /appointments/:id { status: "completed" }
+
+6. Customer pays via in-app Square payment form
+   └─ iOS app uses Square In-App Payments SDK
+   └─ Payment processes through Square Payments API
+
+7. Square sends payment.created webhook to Azure API
+   └─ Azure /square/webhooks handler receives event
+   └─ Azure creates reward ledger entry (e.g., +10 points)
+   └─ iOS app fetches /rewards/summary, shows updated balance
+
+8. Customer loyalty balance updated
+   └─ Next visit, they see "120 points until reward"
+```
 
 ## MVP product scope
 
 ### Customer iOS app
-- Registration and sign-in
-- View services and barbers
+- Registration and sign-in (future: Microsoft Entra External ID)
+- Browse services and barbers (from Square Catalog)
 - Request or book appointments
 - View upcoming appointments
+- Pay with card or Apple Pay (Square In-App Payments SDK)
 - View rewards balance and activity
 - Manage profile and marketing preferences
-- Receive push notifications for confirmations and reminders
 
 ### Admin web portal
-- Staff/admin login
-- Customer search and profile lookup
-- Barber schedule management
-- Appointment calendar and status updates
+- Appointment calendar and status management
+- Barber schedule editor
+- Customer search and CRM notes
 - Reward adjustments and audit trail
-- CRM notes and follow-up reminders
+- Square integration status (sync logs, webhook health)
 
-### Backend services
-- Authentication and authorization
-- Customer, barber, service, and appointment APIs
-- Availability and scheduling validation
-- Rewards ledger and tier tracking
-- Notification orchestration
-- Square webhook ingestion and reconciliation
+### Backend API (Square-first)
+- **Endpoints that sync with Square:** catalog, customers, payments, webhooks
+- **Endpoints custom to barbershop:** appointments, barbers, scheduling, CRM, rewards ledger
+- **Authentication:** Placeholder for Entra; MVP uses mock
+- **Webhooks:** Ingest Square payment events, trigger Azure reward logic
 
-## Azure-first architecture
+## Azure Services
 
-### Recommended Azure services
-- **Authentication:** Microsoft Entra External ID
-- **Backend API:** Azure App Service for MVP, or Azure Container Apps if background workers are needed early
-- **Database:** Azure SQL Database
-- **Blob/file storage:** Azure Blob Storage
-- **Push notifications:** Azure Notification Hubs
-- **Admin web portal hosting:** Azure Static Web Apps
-- **Secrets:** Azure Key Vault
-- **Observability:** Azure Monitor + Application Insights + Log Analytics
-- **CI/CD:** GitHub Actions
+- **Backend API:** Azure App Service (Node.js + Express)
+- **Database:** Azure SQL Database (appointments, barbers, CRM, rewards ledger)
+- **Storage:** Azure Blob Storage (future: receipts, invoices, media)
+- **Auth:** Microsoft Entra External ID (future implementation)
+- **Notifications:** Azure Notification Hubs (future: SMS/email/push reminders)
+- **Admin Portal Host:** Azure Static Web Apps
+- **Secrets:** Azure Key Vault (Square credentials, DB conn strings)
+- **Monitoring:** Application Insights + Log Analytics
+- **IaC:** Bicep templates in `infra/`
 
-## System responsibilities
+## Core Data Model
 
-### iOS app
-- Customer-facing mobile experience
-- Local cache and UI state
-- Token/session handling
-- Notification display
+| Entity | Owner | Purpose |
+|--------|-------|---------|
+| `Customer` | Square | Profile, contact info, segments |
+| `Barber` | Azure | Name, specialty, work hours, availability |
+| `Service` | Square | Name, price, duration, category |
+| `Appointment` | Azure | Booking request, status workflow, notes |
+| `RewardAccount` | Azure | Points balance, tier |
+| `RewardLedgerEntry` | Azure | Immutable transaction (earned/redeemed points) |
+| `CRMNote` | Azure | Internal notes, tags, follow-up date |
+| `SquareMapping` | Azure | Link between local IDs and Square IDs |
 
-### Azure backend
-- Source of truth for business data
-- Scheduling rules and conflict prevention
-- Rewards transactions
-- CRM notes and customer history
-- Square integration
-
-### Admin portal
-- Business operations UI
-- Schedule management
-- CRM workflows
-- Appointment and rewards oversight
-
-## Core domain model
-
-### Entities
-- `CustomerProfile`
-- `Barber`
-- `ServiceMenuItem`
-- `Appointment`
-- `RewardSummary`
-- `RewardActivity`
-- `AppSession`
-
-### Backend entities to add next
-- `UserAccount`
-- `ShopLocation`
-- `ScheduleTemplate`
-- `ScheduleException`
-- `AppointmentStatusEvent`
-- `RewardLedgerEntry`
-- `CRMNote`
 - `SquareMapping`
 
 ## Azure backend blueprint
