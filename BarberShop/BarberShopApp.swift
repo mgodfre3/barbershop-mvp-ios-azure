@@ -12,7 +12,9 @@ import SquareInAppPaymentsSDK
 @main
 struct BarberShopApp: App {
     init() {
+        #if !targetEnvironment(simulator)
         SQIPInAppPaymentsSDK.squareApplicationID = "sq0idp-rVH2MiAbH0PGniY6PwyIZA"
+        #endif
     }
 
     var sharedModelContainer: ModelContainer = {

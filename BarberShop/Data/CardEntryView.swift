@@ -1,7 +1,44 @@
 import SwiftUI
 import SquareInAppPaymentsSDK
 
-struct CardEntryView: UIViewControllerRepresentable {
+struct CardEntryView: View {
+    let amount: Decimal
+    let onNonceReceived: (String) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        #if targetEnvironment(simulator)
+        // Square SDK card entry is not supported on simulator
+        VStack(spacing: 20) {
+            Image(systemName: "creditcard.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.brown)
+            Text("Card Entry")
+                .font(.title2.bold())
+            Text(String(format: "Amount: $%.2f", NSDecimalNumber(decimal: amount).doubleValue))
+                .foregroundStyle(.secondary)
+            Text("Square card entry is not available on the simulator. On a real device, a secure card form will appear here.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+            Button("Use Test Nonce") {
+                onNonceReceived("cnon:card-nonce-ok")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.brown)
+            Button("Cancel", role: .cancel) {
+                onCancel()
+            }
+        }
+        .padding()
+        #else
+        CardEntryControllerWrapper(amount: amount, onNonceReceived: onNonceReceived, onCancel: onCancel)
+        #endif
+    }
+}
+
+#if !targetEnvironment(simulator)
+private struct CardEntryControllerWrapper: UIViewControllerRepresentable {
     let amount: Decimal
     let onNonceReceived: (String) -> Void
     let onCancel: () -> Void
@@ -50,3 +87,4 @@ struct CardEntryView: UIViewControllerRepresentable {
         }
     }
 }
+#endif
