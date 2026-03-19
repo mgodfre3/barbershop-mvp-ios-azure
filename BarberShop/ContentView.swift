@@ -10,18 +10,21 @@ import SwiftData
 
 struct ContentView: View {
     @StateObject private var viewModel = MVPScreenViewModel()
+    @State private var selectedTab = 0
 
     var body: some View {
-        TabView {
-            HomeView(data: viewModel.data)
+        TabView(selection: $selectedTab) {
+            HomeView(data: viewModel.data, viewModel: viewModel, switchToBookTab: { selectedTab = 1 })
                 .tabItem {
                     Label("Home", systemImage: "house.fill")
                 }
+                .tag(0)
 
             BookingView(data: viewModel.data, viewModel: viewModel)
                 .tabItem {
                     Label("Book", systemImage: "calendar.badge.plus")
                 }
+                .tag(1)
 
             RewardsView(summary: viewModel.data.rewards)
                 .tabItem {
@@ -42,7 +45,10 @@ struct ContentView: View {
 
 private struct HomeView: View {
     let data: MVPData
+    @ObservedObject var viewModel: MVPScreenViewModel
+    var switchToBookTab: () -> Void
     @State private var selectedAppointment: Appointment?
+    @State private var selectedService: ServiceMenuItem?
 
     var body: some View {
         NavigationStack {
@@ -57,7 +63,20 @@ private struct HomeView: View {
             }
             .navigationTitle("MBE")
             .sheet(item: $selectedAppointment) { appointment in
-                AppointmentDetailView(appointment: appointment)
+                AppointmentDetailView(
+                    appointment: appointment,
+                    viewModel: viewModel,
+                    onRebook: {
+                        selectedAppointment = nil
+                        switchToBookTab()
+                    }
+                )
+            }
+            .sheet(item: $selectedService) { service in
+                ServiceDetailView(service: service, onBook: {
+                    selectedService = nil
+                    switchToBookTab()
+                })
             }
         }
     }
@@ -124,28 +143,33 @@ private struct HomeView: View {
 
     private var servicesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Popular services")
+            Text("Our Services")
                 .font(.headline)
 
             ForEach(data.services) { service in
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(service.name)
-                            .font(.subheadline.weight(.semibold))
-                        Text(service.description)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                Button {
+                    selectedService = service
+                } label: {
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(service.name)
+                                .font(.subheadline.weight(.semibold))
+                            Text("\(service.durationMinutes) min")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Text(service.price, format: .currency(code: "USD"))
+                                .font(.subheadline.weight(.semibold))
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text(service.price, format: .currency(code: "USD"))
-                            .font(.subheadline.weight(.semibold))
-                        Text("\(service.durationMinutes) min")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
+                .buttonStyle(.plain)
             }
         }
     }
@@ -632,12 +656,17 @@ private struct TimeSlotCard: View {
 
 private struct AppointmentDetailView: View {
     let appointment: Appointment
+    @ObservedObject var viewModel: MVPScreenViewModel
+    var onRebook: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showCardEntry = false
     @State private var paymentSuccess = false
     @State private var paymentError: String?
+    @State private var showCancelConfirm = false
+    @State private var cancelled = false
 
     private let paymentRepo: PaymentRepository = APIPaymentRepository(client: APIClient())
+    private let appointmentsRepo: AppointmentsRepository = APIAppointmentsRepository(client: APIClient())
 
     var body: some View {
         NavigationStack {
@@ -652,10 +681,10 @@ private struct AppointmentDetailView: View {
                     LabeledContent("Barber", value: appointment.barber.name)
                     LabeledContent("Date", value: appointment.startDate.formatted(date: .abbreviated, time: .shortened))
                     LabeledContent("Status") {
-                        Text(appointment.status.displayName)
+                        Text(cancelled ? "Cancelled" : appointment.status.displayName)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(statusColor(for: appointment.status).opacity(0.15), in: Capsule())
+                            .background(statusColor(for: cancelled ? .cancelled : appointment.status).opacity(0.15), in: Capsule())
                     }
                 }
 
@@ -665,14 +694,39 @@ private struct AppointmentDetailView: View {
                     }
                 }
 
-                Section {
-                    Button {
-                        showCardEntry = true
-                    } label: {
-                        Label("Pay Now", systemImage: "creditcard.fill")
-                            .frame(maxWidth: .infinity, alignment: .center)
+                if !cancelled && appointment.status != .cancelled {
+                    Section {
+                        Button {
+                            showCardEntry = true
+                        } label: {
+                            Label("Pay Now", systemImage: "creditcard.fill")
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
                     }
-                    .disabled(appointment.status == .cancelled)
+
+                    Section {
+                        Button(role: .destructive) {
+                            showCancelConfirm = true
+                        } label: {
+                            Label("Cancel Appointment", systemImage: "xmark.circle")
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+                    }
+                }
+
+                if cancelled {
+                    Section {
+                        Button {
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                onRebook()
+                            }
+                        } label: {
+                            Label("Rebook Appointment", systemImage: "calendar.badge.plus")
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .foregroundStyle(Color(red: 0.85, green: 0.65, blue: 0.13))
+                        }
+                    }
                 }
             }
             .navigationTitle("Appointment Details")
@@ -691,6 +745,14 @@ private struct AppointmentDetailView: View {
                     onCancel: { showCardEntry = false }
                 )
             }
+            .alert("Cancel Appointment?", isPresented: $showCancelConfirm) {
+                Button("Yes, Cancel", role: .destructive) {
+                    Task { await cancelAppointment() }
+                }
+                Button("Keep It", role: .cancel) {}
+            } message: {
+                Text("This will cancel your \(appointment.service.name) with \(appointment.barber.name). You can rebook afterwards.")
+            }
             .alert("Payment Successful!", isPresented: $paymentSuccess) {
                 Button("Done") { dismiss() }
             } message: {
@@ -704,6 +766,19 @@ private struct AppointmentDetailView: View {
             } message: {
                 Text(paymentError ?? "Something went wrong.")
             }
+        }
+    }
+
+    private func cancelAppointment() async {
+        do {
+            _ = try await appointmentsRepo.updateAppointmentStatus(
+                appointmentId: appointment.id.uuidString,
+                status: .cancelled
+            )
+            cancelled = true
+            await viewModel.load()
+        } catch {
+            paymentError = "Failed to cancel: \(error.localizedDescription)"
         }
     }
 
@@ -728,6 +803,72 @@ private struct AppointmentDetailView: View {
         case .confirmed: return .blue
         case .completed: return .green
         case .cancelled: return .red
+        }
+    }
+}
+
+// MARK: - Service Detail View
+
+private struct ServiceDetailView: View {
+    let service: ServiceMenuItem
+    var onBook: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Header
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(service.name)
+                            .font(.title2.bold())
+                        HStack(spacing: 16) {
+                            Label("\(service.durationMinutes) min", systemImage: "clock")
+                            Label(String(format: "$%.2f", NSDecimalNumber(decimal: service.price).doubleValue), systemImage: "dollarsign.circle")
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    // Description
+                    if !service.description.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("About This Service")
+                                .font(.headline)
+                            Text(service.description)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .lineSpacing(4)
+                        }
+                    }
+
+                    // Book button
+                    Button {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            onBook()
+                        }
+                    } label: {
+                        Text("Book This Service")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(red: 0.85, green: 0.65, blue: 0.13))
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Service Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
         }
     }
 }

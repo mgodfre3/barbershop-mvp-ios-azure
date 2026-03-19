@@ -5,6 +5,7 @@ struct ServiceDTO: Codable {
     let name: String
     let durationMinutes: Int
     let price: Double
+    let description: String?
 
     func toDomain() -> ServiceMenuItem {
         ServiceMenuItem(
@@ -12,7 +13,7 @@ struct ServiceDTO: Codable {
             name: name,
             durationMinutes: durationMinutes,
             price: Decimal(price),
-            description: ""
+            description: description ?? ""
         )
     }
 }
