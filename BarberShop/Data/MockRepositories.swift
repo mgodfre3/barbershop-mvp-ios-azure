@@ -24,18 +24,16 @@ final class MockAppointmentsRepository: AppointmentsRepository {
     }
 
     func requestAppointment(
-        customerId: UUID,
-        barberId: UUID,
-        serviceId: UUID,
+        customerId: String,
+        barberId: String,
+        serviceId: String,
         startDate: Date,
         notes: String
     ) async throws -> Appointment {
         try await Task.sleep(nanoseconds: 300_000_000)
 
-        guard let barber = MVPData.preview.barbers.first(where: { $0.id == barberId }),
-              let service = MVPData.preview.services.first(where: { $0.id == serviceId }) else {
-            throw NSError(domain: "MockAppointmentsRepository", code: 404, userInfo: [NSLocalizedDescriptionKey: "Barber or service not found"])
-        }
+        let barber = MVPData.preview.barbers.first ?? MVPData.preview.barbers[0]
+        let service = MVPData.preview.services.first ?? MVPData.preview.services[0]
 
         let appointment = Appointment(
             id: UUID(),
@@ -49,10 +47,10 @@ final class MockAppointmentsRepository: AppointmentsRepository {
         return appointment
     }
 
-    func updateAppointmentStatus(appointmentId: UUID, status: AppointmentStatus) async throws -> Appointment {
+    func updateAppointmentStatus(appointmentId: String, status: AppointmentStatus) async throws -> Appointment {
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        guard let index = appointments.firstIndex(where: { $0.id == appointmentId }) else {
+        guard let index = appointments.firstIndex(where: { $0.id.uuidString == appointmentId }) else {
             throw NSError(domain: "MockAppointmentsRepository", code: 404, userInfo: [NSLocalizedDescriptionKey: "Appointment not found"])
         }
 

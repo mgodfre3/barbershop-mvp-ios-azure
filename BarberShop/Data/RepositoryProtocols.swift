@@ -10,8 +10,8 @@ protocol BarbersRepository {
 
 protocol AppointmentsRepository {
     func fetchAppointments() async throws -> [Appointment]
-    func requestAppointment(customerId: UUID, barberId: UUID, serviceId: UUID, startDate: Date, notes: String) async throws -> Appointment
-    func updateAppointmentStatus(appointmentId: UUID, status: AppointmentStatus) async throws -> Appointment
+    func requestAppointment(customerId: String, barberId: String, serviceId: String, startDate: Date, notes: String) async throws -> Appointment
+    func updateAppointmentStatus(appointmentId: String, status: AppointmentStatus) async throws -> Appointment
 }
 
 protocol RewardsRepository {

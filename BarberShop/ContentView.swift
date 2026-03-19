@@ -473,14 +473,10 @@ private struct BookingView: View {
         guard let slot = selectedSlot,
               let serviceID = selectedServiceID else { return }
 
-        let barberID = data.barbers.first(where: { $0.name == slot.barberName })?.id
-            ?? data.barbers.first?.id
-        guard let barberID else { return }
-
         do {
             try await viewModel.requestAppointment(
-                barberId: barberID,
-                serviceId: serviceID,
+                barberId: slot.barberId,
+                serviceId: findAPIServiceId(for: serviceID),
                 startDate: slot.startDate,
                 notes: notes
             )

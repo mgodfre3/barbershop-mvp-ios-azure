@@ -48,12 +48,12 @@ final class MVPScreenViewModel: ObservableObject {
         }
     }
 
-    func requestAppointment(barberId: UUID, serviceId: UUID, startDate: Date, notes: String) async throws {
+    func requestAppointment(barberId: String, serviceId: String, startDate: Date, notes: String) async throws {
         isLoading = true
         defer { isLoading = false }
 
         let appointment = try await appointmentsRepository.requestAppointment(
-            customerId: data.customer.id,
+            customerId: data.customer.id.uuidString,
             barberId: barberId,
             serviceId: serviceId,
             startDate: startDate,

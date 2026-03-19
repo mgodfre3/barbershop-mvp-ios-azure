@@ -11,16 +11,16 @@ struct APIAppointmentsRepository: AppointmentsRepository {
     }
 
     func requestAppointment(
-        customerId: UUID,
-        barberId: UUID,
-        serviceId: UUID,
+        customerId: String,
+        barberId: String,
+        serviceId: String,
         startDate: Date,
         notes: String
     ) async throws -> Appointment {
         let payload = AppointmentRequestPayload(
-            customerId: customerId.uuidString,
-            barberId: barberId.uuidString,
-            serviceId: serviceId.uuidString,
+            customerId: customerId,
+            barberId: barberId,
+            serviceId: serviceId,
             startAt: ISO8601DateFormatter().string(from: startDate),
             notes: notes.isEmpty ? nil : notes
         )
@@ -39,10 +39,10 @@ struct APIAppointmentsRepository: AppointmentsRepository {
         return appointment
     }
 
-    func updateAppointmentStatus(appointmentId: UUID, status: AppointmentStatus) async throws -> Appointment {
+    func updateAppointmentStatus(appointmentId: String, status: AppointmentStatus) async throws -> Appointment {
         let payload = AppointmentStatusUpdatePayload(status: status.rawValue)
         let dto: AppointmentDTO = try await client.patch(
-            "/appointments/\(appointmentId.uuidString)", body: payload
+            "/appointments/\(appointmentId)", body: payload
         )
 
         let services: [ServiceDTO] = try await client.get("/services")
