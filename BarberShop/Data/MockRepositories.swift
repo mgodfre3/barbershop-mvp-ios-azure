@@ -37,6 +37,7 @@ final class MockAppointmentsRepository: AppointmentsRepository {
 
         let appointment = Appointment(
             id: UUID(),
+            apiId: "mock-\(UUID().uuidString.prefix(8))",
             service: service,
             barber: barber,
             startDate: startDate,

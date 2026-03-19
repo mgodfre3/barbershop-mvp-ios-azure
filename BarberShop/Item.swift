@@ -68,6 +68,7 @@ enum AppointmentStatus: String, CaseIterable, Codable {
 
 struct Appointment: Identifiable, Hashable {
     let id: UUID
+    var apiId: String
     var service: ServiceMenuItem
     var barber: Barber
     var startDate: Date
@@ -204,6 +205,7 @@ struct MVPData {
         let upcoming = [
             Appointment(
                 id: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd") ?? UUID(),
+                apiId: "preview-1",
                 service: signatureExperience,
                 barber: barberEdwin,
                 startDate: Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date(),
@@ -212,6 +214,7 @@ struct MVPData {
             ),
             Appointment(
                 id: UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee") ?? UUID(),
+                apiId: "preview-2",
                 service: beardTrim,
                 barber: barberMarcus,
                 startDate: Calendar.current.date(byAdding: .day, value: 9, to: Date()) ?? Date(),

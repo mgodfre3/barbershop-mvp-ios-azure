@@ -76,6 +76,7 @@ struct APIAppointmentsRepository: AppointmentsRepository {
 
         return Appointment(
             id: UUID(uuidString: dto.id) ?? UUID(),
+            apiId: dto.id,
             service: serviceDTO.toDomain(),
             barber: barberDTO.toDomain(),
             startDate: startDate,

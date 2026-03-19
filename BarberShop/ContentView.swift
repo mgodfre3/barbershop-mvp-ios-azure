@@ -381,15 +381,15 @@ private struct BookingView: View {
             }
             .task { loadSlots() }
             .alert("Appointment Requested!", isPresented: $showConfirmation) {
-                Button("Pay Now") { showCardEntry = true }
+                Button("Pay $20 Holding Fee") { showCardEntry = true }
                 Button("Pay Later", role: .cancel) {}
             } message: {
-                Text("Your appointment has been submitted. Would you like to pay now?")
+                Text("A $20 holding fee secures your appointment and will be deducted from your service total of \(String(format: "$%.2f", NSDecimalNumber(decimal: selectedServicePrice).doubleValue)).")
             }
-            .alert("Payment Successful!", isPresented: $paymentSuccess) {
+            .alert("Holding Fee Paid!", isPresented: $paymentSuccess) {
                 Button("Done") {}
             } message: {
-                Text("Your payment has been processed through Square.")
+                Text("Your $20 holding fee has been processed. The remaining balance will be due at your appointment.")
             }
             .alert("Booking Failed", isPresented: .init(
                 get: { bookingError != nil },
@@ -401,7 +401,7 @@ private struct BookingView: View {
             }
             .sheet(isPresented: $showCardEntry) {
                 CardEntryView(
-                    amount: selectedServicePrice,
+                    amount: 20,
                     onNonceReceived: { nonce in
                         Task { await processPayment(nonce: nonce) }
                     },
@@ -504,7 +504,7 @@ private struct BookingView: View {
                 startDate: slot.startDate,
                 notes: notes
             )
-            lastBookedAppointmentId = data.upcomingAppointments.last?.id.uuidString
+            lastBookedAppointmentId = data.upcomingAppointments.last?.apiId
             notes = ""
             selectedSlot = nil
             showConfirmation = true
@@ -519,7 +519,7 @@ private struct BookingView: View {
         do {
             _ = try await paymentRepo.processPayment(
                 nonce: nonce,
-                amount: selectedServicePrice,
+                amount: 20,
                 customerId: data.customer.id.uuidString,
                 appointmentId: lastBookedAppointmentId ?? ""
             )
@@ -674,7 +674,12 @@ private struct AppointmentDetailView: View {
                 Section("Service") {
                     LabeledContent("Service", value: appointment.service.name)
                     LabeledContent("Duration", value: "\(appointment.service.durationMinutes) min")
-                    LabeledContent("Price", value: String(format: "$%.2f", NSDecimalNumber(decimal: appointment.service.price).doubleValue))
+                    LabeledContent("Service Price", value: String(format: "$%.2f", NSDecimalNumber(decimal: appointment.service.price).doubleValue))
+                    LabeledContent("Holding Fee Paid", value: "$20.00")
+                    LabeledContent("Balance Due") {
+                        Text(String(format: "$%.2f", NSDecimalNumber(decimal: appointment.service.price - 20).doubleValue))
+                            .fontWeight(.semibold)
+                    }
                 }
 
                 Section("Appointment") {
@@ -699,7 +704,7 @@ private struct AppointmentDetailView: View {
                         Button {
                             showCardEntry = true
                         } label: {
-                            Label("Pay Now", systemImage: "creditcard.fill")
+                            Label(String(format: "Pay Remaining $%.2f", NSDecimalNumber(decimal: appointment.service.price - 20).doubleValue), systemImage: "creditcard.fill")
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
                     }
@@ -738,7 +743,7 @@ private struct AppointmentDetailView: View {
             }
             .sheet(isPresented: $showCardEntry) {
                 CardEntryView(
-                    amount: appointment.service.price,
+                    amount: appointment.service.price - 20,
                     onNonceReceived: { nonce in
                         Task { await processPayment(nonce: nonce) }
                     },
@@ -772,7 +777,7 @@ private struct AppointmentDetailView: View {
     private func cancelAppointment() async {
         do {
             _ = try await appointmentsRepo.updateAppointmentStatus(
-                appointmentId: appointment.id.uuidString,
+                appointmentId: appointment.apiId,
                 status: .cancelled
             )
             cancelled = true
@@ -787,9 +792,9 @@ private struct AppointmentDetailView: View {
         do {
             _ = try await paymentRepo.processPayment(
                 nonce: nonce,
-                amount: appointment.service.price,
+                amount: appointment.service.price - 20,
                 customerId: "customer-1",
-                appointmentId: appointment.id.uuidString
+                appointmentId: appointment.apiId
             )
             paymentSuccess = true
         } catch {
