@@ -72,3 +72,13 @@ struct AppointmentRequestPayload: Codable {
 struct AppointmentStatusUpdatePayload: Codable {
     let status: String
 }
+
+struct AvailabilitySlotDTO: Codable {
+    let barberId: String
+    let barberName: String
+    let serviceId: String
+    let date: String
+    let startAt: String
+    let endAt: String
+    let durationMinutes: Int
+}

@@ -10,6 +10,11 @@ import SwiftData
 
 @main
 struct BarberShopApp: App {
+    init() {
+        // Square In-App Payments SDK initialized on real device only.
+        // Re-add SquareInAppPaymentsSDK SPM package for device builds.
+    }
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             AppSession.self,

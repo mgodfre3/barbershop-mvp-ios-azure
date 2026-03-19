@@ -17,3 +17,7 @@ protocol AppointmentsRepository {
 protocol RewardsRepository {
     func fetchRewardSummary() async throws -> RewardSummary
 }
+
+protocol AvailabilityRepository {
+    func fetchSlots(serviceId: String, barberId: String?, days: Int) async throws -> [AvailabilitySlot]
+}

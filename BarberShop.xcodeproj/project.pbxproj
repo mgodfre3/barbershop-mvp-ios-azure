@@ -6,6 +6,9 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		EE8D3AC62F6A1C3A00026864 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -208,6 +211,8 @@
 			);
 			mainGroup = EE8D3AAB2F6A1C3800026864;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = EE8D3AB52F6A1C3900026864 /* Products */;
 			projectDirPath = "";
@@ -595,6 +600,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AA000001000000000000000A /* XCRemoteSwiftPackageReference "in-app-payments-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/square/in-app-payments-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.6.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AA000002000000000000000B /* SquareInAppPaymentsSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA000001000000000000000A /* XCRemoteSwiftPackageReference "in-app-payments-ios" */;
+			productName = SquareInAppPaymentsSDK;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = EE8D3AAC2F6A1C3800026864 /* Project object */;
 }

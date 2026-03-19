@@ -1,7 +1,8 @@
-udimport cors from "cors";
+import cors from "cors";
 import express from "express";
 import { z } from "zod";
-import { customersApi, catalogApi, ordersApi, loyaltyApi } from "./square-client.js";
+import { squareClient } from "./square-client.js";
+import type { Currency } from "square";
 import {
   mockAppointments,
   mockBarbers,
@@ -9,7 +10,9 @@ import {
   mockServices,
   type Appointment,
   type AppointmentStatus,
+  type DayOfWeek,
 } from "./models.js";
+import { computeAvailability, hasScheduleConflict } from "./availability-engine.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
@@ -27,6 +30,31 @@ app.get("/health", (_req, res) => {
     architecture: "Square-first with Azure custom logic",
     timestamp: new Date().toISOString()
   });
+});
+
+// ============================================================================
+// SQUARE DIAGNOSTICS (sandbox auth verification)
+// ============================================================================
+app.get("/square/diagnostics", async (_req, res) => {
+  try {
+    const response = await squareClient.locations.list();
+    const locations = response.locations ?? [];
+    return res.json({
+      ok: true,
+      environment: process.env.NODE_ENV === "production" ? "production" : "sandbox",
+      locationCount: locations.length,
+      locationIds: locations.map((l) => l.id).filter(Boolean),
+      message: "Square credentials are valid.",
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      environment: process.env.NODE_ENV === "production" ? "production" : "sandbox",
+      message: "Square credentials failed.",
+      errorType: error?.name ?? "UnknownError",
+      errorMessage: error?.message ?? "No message",
+    });
+  }
 });
 
 // ============================================================================
@@ -59,24 +87,85 @@ app.get("/services", (_req, res) => {
 // ============================================================================
 // BARBERS (Azure-owned: barbershop-specific metadata)
 // ============================================================================
-// Barber roster with work hours, specialties, and scheduling rules
-// This is NOT in Square; it's custom barbershop domain logic.
 app.get("/barbers", (_req, res) => {
-  res.json(mockBarbers);
+  // Include computed isAvailableToday based on schedule
+  const today = new Date().getDay();
+  const enriched = mockBarbers.map((b) => ({
+    ...b,
+    isAvailableToday: b.schedule.some((s) => s.day === today),
+  }));
+  res.json(enriched);
 });
 
 // ============================================================================
-// AVAILABILITY (Azure-owned: scheduling engine)
+// BARBER SCHEDULE MANAGEMENT (Azure-owned)
 // ============================================================================
-// Compute available slots based on:
-// - Barber work hours (from /barbers endpoint)
-// - Existing appointments (from Azure DB)
-// - Service duration (from Square Catalog)
-// Square has Bookings API but doesn't handle our custom barber assignment logic.
+const dayOfWeekSchema = z.number().int().min(0).max(6);
+
+app.put("/barbers/:id/schedule", (req, res) => {
+  const barber = mockBarbers.find((b) => b.id === req.params.id);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+
+  const bodySchema = z.object({
+    schedule: z.array(z.object({
+      day: dayOfWeekSchema,
+      startHour: z.number().int().min(0).max(23),
+      endHour: z.number().int().min(1).max(24),
+    }).refine((s) => s.endHour > s.startHour, { message: "endHour must be after startHour" })),
+  });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  barber.schedule = parsed.data.schedule.map((s) => ({
+    day: s.day as DayOfWeek,
+    startHour: s.startHour,
+    endHour: s.endHour,
+  }));
+
+  return res.json({ message: "Schedule updated", barber });
+});
+
+app.get("/barbers/:id/time-off", (req, res) => {
+  const barber = mockBarbers.find((b) => b.id === req.params.id);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+  return res.json(barber.timeOff);
+});
+
+app.post("/barbers/:id/time-off", (req, res) => {
+  const barber = mockBarbers.find((b) => b.id === req.params.id);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+
+  const bodySchema = z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    reason: z.string().optional(),
+  });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  const entry = {
+    id: `to-${barber.timeOff.length + 1}`,
+    barberId: barber.id,
+    ...parsed.data,
+  };
+  barber.timeOff.push(entry);
+
+  return res.status(201).json(entry);
+});
+
+// ============================================================================
+// AVAILABILITY (Azure-owned: real scheduling engine)
+// ============================================================================
 app.get("/availability", (req, res) => {
   const querySchema = z.object({
     serviceId: z.string().min(1),
     barberId: z.string().optional(),
+    days: z.coerce.number().int().min(1).max(30).default(7),
   });
 
   const parsed = querySchema.safeParse(req.query);
@@ -84,15 +173,28 @@ app.get("/availability", (req, res) => {
     return res.status(400).json({ error: "Invalid query", details: parsed.error.flatten() });
   }
 
-  const { serviceId, barberId } = parsed.data;
-  const candidates = barberId ? mockBarbers.filter((b) => b.id === barberId) : mockBarbers;
-  const slots = candidates.map((barber, index) => ({
-    barberId: barber.id,
-    serviceId,
-    startAt: new Date(Date.now() + (24 + index * 2) * 60 * 60 * 1000).toISOString(),
-  }));
+  const { serviceId, barberId, days } = parsed.data;
+  const service = mockServices.find((s) => s.id === serviceId);
+  if (!service) {
+    return res.status(404).json({ error: "Service not found" });
+  }
 
-  return res.json(slots);
+  const candidates = barberId
+    ? mockBarbers.filter((b) => b.id === barberId)
+    : mockBarbers;
+
+  const startDate = new Date();
+  const endDate = new Date();
+  endDate.setDate(endDate.getDate() + days);
+
+  const allSlots = candidates.flatMap((barber) =>
+    computeAvailability(barber, service, mockAppointments, startDate, endDate)
+  );
+
+  // Sort by date/time
+  allSlots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+
+  return res.json(allSlots);
 });
 
 // ============================================================================
@@ -116,6 +218,20 @@ app.post("/appointments", (req, res) => {
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  // Validate barber and service exist
+  const barber = mockBarbers.find((b) => b.id === parsed.data.barberId);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+
+  const service = mockServices.find((s) => s.id === parsed.data.serviceId);
+  if (!service) return res.status(404).json({ error: "Service not found" });
+
+  // Check schedule conflict
+  const proposedStart = new Date(parsed.data.startAt);
+  const conflict = hasScheduleConflict(barber, service, proposedStart, mockAppointments);
+  if (conflict.conflict) {
+    return res.status(409).json({ error: "Schedule conflict", reason: conflict.reason });
   }
 
   const appointment: Appointment = {
@@ -181,16 +297,73 @@ app.post("/customers/sync", async (req, res) => {
 // ============================================================================
 // PAYMENTS (Square is source of truth)
 // ============================================================================
-// Payments are processed through Square's Payments API (via In-App Payments SDK).
-// This endpoint is for payment status queries and linking to appointments.
-app.get("/payments/:squarePaymentId", async (req, res) => {
-  // TODO: In production, call paymentsApi.retrievePayment(req.params.squarePaymentId)
-
-  res.json({
-    message: "Payment lookup scaffolded",
-    squarePaymentId: req.params.squarePaymentId,
-    placeholder: true,
+// Process payments via Square's Payments API using a nonce from the In-App Payments SDK.
+app.post("/payments/process", async (req, res) => {
+  const bodySchema = z.object({
+    nonce: z.string().min(1),
+    amount: z.number().positive(),
+    currency: z.string().length(3).default("USD"),
+    appointmentId: z.string().optional(),
+    customerId: z.string().optional(),
   });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  const { nonce, amount, currency, appointmentId, customerId } = parsed.data;
+  const idempotencyKey = `${appointmentId ?? "anon"}-${Date.now()}`;
+
+  try {
+    const locationId = process.env.SQUARE_LOCATION_ID || "LJJWSM6MHA21M";
+    const payment = await squareClient.payments.create({
+      sourceId: nonce,
+      idempotencyKey,
+      amountMoney: {
+        amount: BigInt(Math.round(amount * 100)),
+        currency: currency as Currency,
+      },
+      locationId,
+      note: appointmentId ? `Appointment: ${appointmentId}` : undefined,
+    });
+
+    return res.status(201).json({
+      ok: true,
+      squarePaymentId: payment.payment?.id,
+      status: payment.payment?.status,
+      amount: parsed.data.amount,
+      currency,
+      appointmentId,
+    });
+  } catch (error: any) {
+    return res.status(502).json({
+      ok: false,
+      message: "Payment processing failed",
+      errorType: error?.name ?? "UnknownError",
+      errorMessage: error?.message ?? "No message",
+    });
+  }
+});
+
+// Payment status lookup
+app.get("/payments/:squarePaymentId", async (req, res) => {
+  try {
+    const payment = await squareClient.payments.get({ paymentId: req.params.squarePaymentId });
+    return res.json({
+      ok: true,
+      squarePaymentId: payment.payment?.id,
+      status: payment.payment?.status,
+      amount: payment.payment?.amountMoney,
+    });
+  } catch (error: any) {
+    return res.status(502).json({
+      ok: false,
+      message: "Payment lookup failed",
+      errorType: error?.name ?? "UnknownError",
+      errorMessage: error?.message ?? "No message",
+    });
+  }
 });
 
 // ============================================================================
