@@ -73,7 +73,8 @@ db.exec(`
     serviceId TEXT NOT NULL REFERENCES services(id),
     startAt TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'requested',
-    notes TEXT
+    notes TEXT,
+    squareBookingId TEXT
   );
 
   CREATE TABLE IF NOT EXISTS customer_ledger (
@@ -88,6 +89,13 @@ db.exec(`
   );
 `);
 
+// Migrate: add squareBookingId column if missing (for existing databases)
+try {
+  db.exec(`ALTER TABLE appointments ADD COLUMN squareBookingId TEXT`);
+} catch {
+  // Column already exists — ignore
+}
+
 // ---------------------------------------------------------------------------
 // Seed default data (only when tables are empty)
 // ---------------------------------------------------------------------------
@@ -98,7 +106,7 @@ function seed(): void {
   const insertBarber = db.prepare("INSERT INTO barbers (id, name, specialty) VALUES (?, ?, ?)");
   const insertService = db.prepare("INSERT INTO services (id, name, description, durationMinutes, price) VALUES (?, ?, ?, ?, ?)");
   const insertSchedule = db.prepare("INSERT INTO barber_schedules (barberId, day, startHour, endHour) VALUES (?, ?, ?, ?)");
-  const insertAppt = db.prepare("INSERT INTO appointments (id, customerId, barberId, serviceId, startAt, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const insertAppt = db.prepare("INSERT INTO appointments (id, customerId, barberId, serviceId, startAt, status, notes, squareBookingId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 
   const seedTx = db.transaction(() => {
     // Barbers - The Master Barber Experience Team
@@ -197,7 +205,7 @@ function seed(): void {
 
     // Seed appointment
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    insertAppt.run("appt-1", "customer-1", "barber-edwin", "svc-signature", tomorrow, "confirmed", "First-time client");
+    insertAppt.run("appt-1", "customer-1", "barber-edwin", "svc-signature", tomorrow, "confirmed", "First-time client", null);
   });
 
   seedTx();
@@ -301,29 +309,34 @@ export function getOverridesForDateRange(barberId: string, startDate: string, en
 
 // -- Appointments -----------------------------------------------------------
 export function getAllAppointments(): Appointment[] {
-  return db.prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes FROM appointments").all() as Appointment[];
+  return db.prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes, squareBookingId FROM appointments").all() as Appointment[];
 }
 
 export function getAppointmentById(id: string): Appointment | undefined {
   return db
-    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes FROM appointments WHERE id = ?")
+    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes, squareBookingId FROM appointments WHERE id = ?")
     .get(id) as Appointment | undefined;
 }
 
 export function getAppointmentsByBarber(barberId: string): Appointment[] {
   return db
-    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes FROM appointments WHERE barberId = ?")
+    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes, squareBookingId FROM appointments WHERE barberId = ?")
     .all(barberId) as Appointment[];
 }
 
 export function insertAppointment(appt: Appointment): void {
   db.prepare(
-    "INSERT INTO appointments (id, customerId, barberId, serviceId, startAt, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  ).run(appt.id, appt.customerId, appt.barberId, appt.serviceId, appt.startAt, appt.status, appt.notes ?? null);
+    "INSERT INTO appointments (id, customerId, barberId, serviceId, startAt, status, notes, squareBookingId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(appt.id, appt.customerId, appt.barberId, appt.serviceId, appt.startAt, appt.status, appt.notes ?? null, appt.squareBookingId ?? null);
 }
 
 export function updateAppointmentStatus(id: string, status: AppointmentStatus): boolean {
   const result = db.prepare("UPDATE appointments SET status = ? WHERE id = ?").run(status, id);
+  return result.changes > 0;
+}
+
+export function updateAppointmentSquareBookingId(id: string, squareBookingId: string): boolean {
+  const result = db.prepare("UPDATE appointments SET squareBookingId = ? WHERE id = ?").run(squareBookingId, id);
   return result.changes > 0;
 }
 
@@ -367,7 +380,7 @@ export function countLedgerEntries(): number {
 
 export function getAppointmentsByCustomer(customerId: string): Appointment[] {
   return db
-    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes FROM appointments WHERE customerId = ?")
+    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes, squareBookingId FROM appointments WHERE customerId = ?")
     .all(customerId) as Appointment[];
 }
 

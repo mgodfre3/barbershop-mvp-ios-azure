@@ -49,6 +49,7 @@ export type Appointment = {
   startAt: string;
   status: AppointmentStatus;
   notes?: string;
+  squareBookingId?: string;
 };
 
 export type AvailabilitySlot = {

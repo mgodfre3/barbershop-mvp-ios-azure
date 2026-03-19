@@ -7,6 +7,7 @@ import {
   mockRewards,
   type Appointment,
   type AppointmentStatus,
+  type AvailabilitySlot,
   type CustomerSummary,
   type DayOfWeek,
   type LedgerEntry,
@@ -26,6 +27,7 @@ import {
   getAppointmentsByCustomer,
   insertAppointment,
   updateAppointmentStatus,
+  updateAppointmentSquareBookingId,
   countAppointments,
   getBarberOverrides,
   addOverride,
@@ -40,6 +42,7 @@ import { computeAvailability, hasScheduleConflict } from "./availability-engine.
 
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
+const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID || "LJJWSM6MHA21M";
 
 app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
 app.use(express.json());
@@ -245,13 +248,15 @@ app.delete("/barbers/:id/overrides/:overrideId", (req, res) => {
 });
 
 // ============================================================================
-// AVAILABILITY (Azure-owned: real scheduling engine)
+// AVAILABILITY (Square Bookings → fallback to custom engine)
 // ============================================================================
-app.get("/availability", (req, res) => {
+app.get("/availability", async (req, res) => {
   const querySchema = z.object({
     serviceId: z.string().min(1),
     barberId: z.string().optional(),
     days: z.coerce.number().int().min(1).max(60).default(7),
+    serviceVariationId: z.string().optional(),
+    teamMemberIds: z.string().optional(), // comma-separated
   });
 
   const parsed = querySchema.safeParse(req.query);
@@ -259,12 +264,67 @@ app.get("/availability", (req, res) => {
     return res.status(400).json({ error: "Invalid query", details: parsed.error.flatten() });
   }
 
-  const { serviceId, barberId, days } = parsed.data;
+  const { serviceId, barberId, days, serviceVariationId, teamMemberIds } = parsed.data;
   const service = getServiceById(serviceId);
   if (!service) {
     return res.status(404).json({ error: "Service not found" });
   }
 
+  // Try Square Bookings API first
+  if (serviceVariationId) {
+    try {
+      const startAt = new Date().toISOString();
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + days);
+      const endAt = endDate.toISOString();
+
+      const teamFilter = teamMemberIds
+        ? { any: teamMemberIds.split(",").map((id) => id.trim()) }
+        : undefined;
+
+      const result = await squareClient.bookings.searchAvailability({
+        query: {
+          filter: {
+            startAtRange: { startAt, endAt },
+            locationId: SQUARE_LOCATION_ID,
+            segmentFilters: [{
+              serviceVariationId,
+              teamMemberIdFilter: teamFilter,
+            }],
+          },
+        },
+      });
+
+      const availabilities = result.availabilities ?? [];
+      const slots: AvailabilitySlot[] = availabilities.map((a) => {
+        const segment = a.appointmentSegments?.[0];
+        const startDate = new Date(a.startAt!);
+        const durationMinutes = segment?.durationMinutes ?? service.durationMinutes;
+        const endSlot = new Date(startDate.getTime() + durationMinutes * 60_000);
+
+        return {
+          barberId: segment?.teamMemberId ?? barberId ?? "unknown",
+          barberName: segment?.teamMemberId ?? barberId ?? "unknown",
+          serviceId,
+          date: startDate.toISOString().split("T")[0],
+          startAt: startDate.toISOString(),
+          endAt: endSlot.toISOString(),
+          durationMinutes,
+        };
+      });
+
+      slots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+
+      console.log(`✅ Square Bookings: returned ${slots.length} availability slots`);
+      return res.json(slots);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.log(`⚠️ Square Bookings searchAvailability failed, falling back to custom engine: ${errMsg}`);
+    }
+  }
+
+  // Fallback: custom availability engine
+  console.log("📋 Using custom availability engine (Square Bookings not available or no serviceVariationId)");
   const candidates = barberId
     ? getAllBarbers().filter((b) => b.id === barberId)
     : getAllBarbers();
@@ -282,14 +342,37 @@ app.get("/availability", (req, res) => {
     return computeAvailability(barber, service, appointments, startDate, endDate, overrides);
   });
 
-  // Sort by date/time
   allSlots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
 
   return res.json(allSlots);
 });
 
 // ============================================================================
-// APPOINTMENTS (Azure-owned: barbershop-specific workflow)
+// BOOKABLE TEAM MEMBERS (Square Bookings)
+// ============================================================================
+app.get("/bookings/team-members", async (_req, res) => {
+  try {
+    const result = await squareClient.bookings.teamMemberProfiles.list();
+    const profiles = result.data ?? [];
+    console.log(`✅ Square Bookings: returned ${profiles.length} team member profiles`);
+    return res.json(profiles);
+  } catch (error: unknown) {
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.log(`⚠️ Square Bookings teamMemberProfiles.list failed, falling back to local barbers: ${errMsg}`);
+    // Fallback: return our local barbers mapped to a similar shape
+    const barbers = getAllBarbers();
+    const fallback = barbers.map((b) => ({
+      teamMemberId: b.id,
+      displayName: b.name,
+      description: b.specialty,
+      isBookable: true,
+    }));
+    return res.json(fallback);
+  }
+});
+
+// ============================================================================
+// APPOINTMENTS (Square Bookings → local SQLite ledger)
 // ============================================================================
 // Track appointment lifecycle (requested → confirmed → completed → cancelled)
 // This is custom barber business logic, not Square's generic Bookings.
@@ -297,13 +380,15 @@ app.get("/appointments", (_req, res) => {
   res.json(getAllAppointments());
 });
 
-app.post("/appointments", (req, res) => {
+app.post("/appointments", async (req, res) => {
   const bodySchema = z.object({
     customerId: z.string().min(1),
     barberId: z.string().min(1),
     serviceId: z.string().min(1),
     startAt: z.string().datetime(),
     notes: z.string().optional(),
+    squareCustomerId: z.string().optional(),
+    serviceVariationId: z.string().optional(),
   });
 
   const parsed = bodySchema.safeParse(req.body);
@@ -327,10 +412,38 @@ app.post("/appointments", (req, res) => {
     return res.status(409).json({ error: "Schedule conflict", reason: conflict.reason });
   }
 
+  // Try creating booking in Square
+  let squareBookingId: string | undefined;
+  if (parsed.data.serviceVariationId) {
+    try {
+      const squareResult = await squareClient.bookings.create({
+        booking: {
+          startAt: parsed.data.startAt,
+          locationId: SQUARE_LOCATION_ID,
+          customerId: parsed.data.squareCustomerId,
+          appointmentSegments: [{
+            teamMemberId: parsed.data.barberId,
+            serviceVariationId: parsed.data.serviceVariationId,
+            durationMinutes: service.durationMinutes,
+          }],
+        },
+      });
+
+      squareBookingId = squareResult.booking?.id;
+      console.log(`✅ Square Booking created: ${squareBookingId}`);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.log(`⚠️ Square Bookings create failed, saving locally only: ${errMsg}`);
+    }
+  } else {
+    console.log("📋 No serviceVariationId provided, skipping Square Booking creation");
+  }
+
   const appointment: Appointment = {
     id: `appt-${countAppointments() + 1}`,
     status: "requested",
     ...parsed.data,
+    squareBookingId,
   };
   insertAppointment(appointment);
 
@@ -339,7 +452,7 @@ app.post("/appointments", (req, res) => {
 
 // ...existing code...
 
-app.patch("/appointments/:id", (req, res) => {
+app.patch("/appointments/:id", async (req, res) => {
   const bodySchema = z.object({
     status: z.enum(["requested", "confirmed", "completed", "cancelled"]),
   });
@@ -352,6 +465,24 @@ app.patch("/appointments/:id", (req, res) => {
   const appointment = getAppointmentById(req.params.id);
   if (!appointment) {
     return res.status(404).json({ error: "Appointment not found" });
+  }
+
+  // Cancel in Square if we have a Square booking and status is being set to cancelled
+  if (parsed.data.status === "cancelled" && appointment.status !== "cancelled" && appointment.squareBookingId) {
+    try {
+      // Fetch current booking to get version for optimistic concurrency
+      const existing = await squareClient.bookings.get({ bookingId: appointment.squareBookingId });
+      const bookingVersion = existing.booking?.version;
+
+      await squareClient.bookings.cancel({
+        bookingId: appointment.squareBookingId,
+        bookingVersion,
+      });
+      console.log(`✅ Square Booking cancelled: ${appointment.squareBookingId}`);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.log(`⚠️ Square Bookings cancel failed, updating locally only: ${errMsg}`);
+    }
   }
 
   updateAppointmentStatus(req.params.id, parsed.data.status as AppointmentStatus);
@@ -426,7 +557,7 @@ app.post("/payments/process", async (req, res) => {
   const idempotencyKey = `${appointmentId ?? "anon"}-${Date.now()}`;
 
   try {
-    const locationId = process.env.SQUARE_LOCATION_ID || "LJJWSM6MHA21M";
+    const locationId = SQUARE_LOCATION_ID;
     const payment = await squareClient.payments.create({
       sourceId: nonce,
       idempotencyKey,
