@@ -551,7 +551,7 @@ app.post("/crm/notes", (req, res) => {
 // ============================================================================
 app.listen(port, () => {
   // eslint-disable-next-line no-console
-  console.log(`🚀 barbershop-api (Square-first) listening on port ${port}`);
+  console.log(`🚀 The Master Barber Experience API listening on port ${port}`);
   // eslint-disable-next-line no-console
   console.log(`
 Architecture:

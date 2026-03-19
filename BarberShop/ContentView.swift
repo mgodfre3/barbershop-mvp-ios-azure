@@ -33,7 +33,7 @@ struct ContentView: View {
                     Label("Profile", systemImage: "person.crop.circle")
                 }
         }
-        .tint(.brown)
+        .tint(Color(red: 0.85, green: 0.65, blue: 0.13))
         .task {
             await viewModel.load()
         }
@@ -55,7 +55,7 @@ private struct HomeView: View {
                 }
                 .padding()
             }
-            .navigationTitle("BarberShop MVP")
+            .navigationTitle("MBE")
             .sheet(item: $selectedAppointment) { appointment in
                 AppointmentDetailView(appointment: appointment)
             }
@@ -64,8 +64,13 @@ private struct HomeView: View {
 
     private var heroCard: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Text("The Master Barber Experience")
+                .font(.title3.weight(.bold))
             Text("Welcome back, \(data.customer.fullName.components(separatedBy: " ").first ?? data.customer.fullName)")
                 .font(.title2.weight(.bold))
+            Text("Lake Nona Town Center • Orlando, FL")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             Text("Your next reward unlocks in \(data.rewards.pointsToNextReward) points.")
                 .foregroundStyle(.secondary)
 
@@ -77,7 +82,7 @@ private struct HomeView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.brown.opacity(0.12), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(Color(red: 0.85, green: 0.65, blue: 0.13).opacity(0.12), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var appointmentsCard: some View {
@@ -171,7 +176,7 @@ private struct HomeView: View {
                 .background(.background, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(.brown.opacity(0.15), lineWidth: 1)
+                        .stroke(Color(red: 0.85, green: 0.65, blue: 0.13).opacity(0.15), lineWidth: 1)
                 )
             }
         }
@@ -338,7 +343,7 @@ private struct BookingView: View {
                     .disabled(selectedSlot == nil || viewModel.isLoading)
                 }
             }
-            .navigationTitle("Book Appointment")
+            .navigationTitle("Book Your Experience")
             .onAppear {
                 selectedBarberID = data.customer.preferredBarberID
                 selectedServiceID = data.services.first?.id
@@ -435,9 +440,14 @@ private struct BookingView: View {
     private func findAPIServiceId(for uuid: UUID) -> String {
         let name = data.services.first(where: { $0.id == uuid })?.name ?? ""
         switch name {
-        case "Classic Cut": return "svc-classic"
+        case "The MBE Signature Experience": return "svc-signature"
+        case "Grooming Experience": return "svc-grooming"
+        case "Shaving Experience": return "svc-shaving"
+        case "Classic Haircut": return "svc-haircut"
+        case "Edge-Up / Lineup": return "svc-edgeup"
+        case "Kid's Haircut": return "svc-kids"
+        case "Ear & Nose Wax": return "svc-wax"
         case "Beard Trim": return "svc-beard"
-        case "Premium Package": return "svc-premium"
         default: return uuid.uuidString
         }
     }
@@ -445,8 +455,10 @@ private struct BookingView: View {
     private func findAPIBarberId(for uuid: UUID) -> String {
         let name = data.barbers.first(where: { $0.id == uuid })?.name ?? ""
         switch name {
-        case "Jordan": return "barber-jordan"
-        case "Alex": return "barber-alex"
+        case "Edwin": return "barber-edwin"
+        case "Marcus": return "barber-marcus"
+        case "Devon": return "barber-devon"
+        case "Rico": return "barber-rico"
         default: return uuid.uuidString
         }
     }
@@ -568,7 +580,7 @@ private struct DatePillButton: View {
                     .foregroundStyle(isSelected ? .white : .primary)
             }
             .frame(width: 60, height: 60)
-            .background(isSelected ? Color.brown : Color.brown.opacity(0.1))
+            .background(isSelected ? Color(red: 0.85, green: 0.65, blue: 0.13) : Color(red: 0.85, green: 0.65, blue: 0.13).opacity(0.1))
             .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
@@ -609,11 +621,11 @@ private struct TimeSlotCard: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(minWidth: 100, alignment: .leading)
-            .background(isSelected ? Color.brown : Color.brown.opacity(0.08))
+            .background(isSelected ? Color(red: 0.85, green: 0.65, blue: 0.13) : Color(red: 0.85, green: 0.65, blue: 0.13).opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(isSelected ? Color.brown : Color.brown.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+                    .strokeBorder(isSelected ? Color(red: 0.85, green: 0.65, blue: 0.13) : Color(red: 0.85, green: 0.65, blue: 0.13).opacity(0.2), lineWidth: isSelected ? 2 : 1)
             )
         }
         .buttonStyle(.plain)
@@ -737,9 +749,9 @@ private struct RewardsView: View {
                         Text("\(summary.pointsToNextReward) points until your next reward")
                             .foregroundStyle(.secondary)
                         ProgressView(value: BookingRules.progressTowardNextReward(pointsBalance: summary.pointsBalance, pointsToNextReward: summary.pointsToNextReward))
-                            .tint(.brown)
+                            .tint(Color(red: 0.85, green: 0.65, blue: 0.13))
                         Label("\(summary.tier) tier", systemImage: "crown.fill")
-                            .foregroundStyle(.brown)
+                            .foregroundStyle(Color(red: 0.85, green: 0.65, blue: 0.13))
                     }
                     .padding(.vertical, 8)
                 }
@@ -779,6 +791,19 @@ private struct ProfileView: View {
                     profileRow(title: "Phone", value: customer.phoneNumber)
                     profileRow(title: "Tier", value: customer.loyaltyTier)
                     profileRow(title: "Preferred barber", value: preferredBarber?.name ?? "Not selected")
+                }
+
+                Section("Shop Information") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("The Master Barber Experience")
+                            .font(.headline)
+                        Text("6900 Tavistock Lakes Blvd., 110")
+                        Text("Orlando, FL 32827")
+                        Text("Lake Nona Town Center")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.subheadline)
+                    .padding(.vertical, 4)
                 }
 
                 Section("Preferences") {

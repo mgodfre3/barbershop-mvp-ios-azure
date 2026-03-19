@@ -34,6 +34,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS services (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    description TEXT,
     durationMinutes INTEGER NOT NULL,
     price REAL NOT NULL
   );
@@ -82,32 +83,108 @@ function seed(): void {
   if (barberCount > 0) return;
 
   const insertBarber = db.prepare("INSERT INTO barbers (id, name, specialty) VALUES (?, ?, ?)");
-  const insertService = db.prepare("INSERT INTO services (id, name, durationMinutes, price) VALUES (?, ?, ?, ?)");
+  const insertService = db.prepare("INSERT INTO services (id, name, description, durationMinutes, price) VALUES (?, ?, ?, ?, ?)");
   const insertSchedule = db.prepare("INSERT INTO barber_schedules (barberId, day, startHour, endHour) VALUES (?, ?, ?, ?)");
   const insertAppt = db.prepare("INSERT INTO appointments (id, customerId, barberId, serviceId, startAt, status, notes) VALUES (?, ?, ?, ?, ?, ?, ?)");
 
   const seedTx = db.transaction(() => {
-    // Barbers
-    insertBarber.run("barber-jordan", "Jordan", "Fades & tapers");
-    insertBarber.run("barber-alex", "Alex", "Beard design");
+    // Barbers - The Master Barber Experience Team
+    insertBarber.run("barber-edwin", "Edwin", "Signature experiences, straight razor shaves, luxury grooming");
+    insertBarber.run("barber-marcus", "Marcus", "Fades, modern styles, beard design");
+    insertBarber.run("barber-devon", "Devon", "Classic cuts, kids haircuts, edge-ups");
+    insertBarber.run("barber-rico", "Rico", "Textured cuts, hot towel shaves");
 
-    // Jordan Mon-Fri 9-17
-    for (let day = 1; day <= 5; day++) {
-      insertSchedule.run("barber-jordan", day, 9, 17);
-    }
-    // Alex Tue-Sat 10-18
-    for (let day = 2; day <= 6; day++) {
-      insertSchedule.run("barber-alex", day, 10, 18);
-    }
+    // Edwin: Tue-Sat (Monday CLOSED)
+    // Tue & Wed: 9-17
+    insertSchedule.run("barber-edwin", 2, 9, 17);
+    insertSchedule.run("barber-edwin", 3, 9, 17);
+    // Thu: 9-18
+    insertSchedule.run("barber-edwin", 4, 9, 18);
+    // Fri & Sat: 9-19
+    insertSchedule.run("barber-edwin", 5, 9, 19);
+    insertSchedule.run("barber-edwin", 6, 9, 19);
 
-    // Services
-    insertService.run("svc-classic", "Classic Cut", 45, 35);
-    insertService.run("svc-beard", "Beard Trim", 25, 20);
-    insertService.run("svc-premium", "Premium Package", 60, 55);
+    // Marcus: Tue-Sat (Monday CLOSED)
+    insertSchedule.run("barber-marcus", 2, 9, 17);
+    insertSchedule.run("barber-marcus", 3, 9, 17);
+    insertSchedule.run("barber-marcus", 4, 9, 18);
+    insertSchedule.run("barber-marcus", 5, 9, 19);
+    insertSchedule.run("barber-marcus", 6, 9, 19);
+
+    // Devon: Wed-Sun (Monday & Tuesday CLOSED)
+    insertSchedule.run("barber-devon", 3, 9, 17);
+    insertSchedule.run("barber-devon", 4, 9, 18);
+    insertSchedule.run("barber-devon", 5, 9, 19);
+    insertSchedule.run("barber-devon", 6, 9, 19);
+    insertSchedule.run("barber-devon", 0, 10, 17); // Sunday
+
+    // Rico: Thu-Sun (Monday-Wednesday CLOSED)
+    insertSchedule.run("barber-rico", 4, 9, 18);
+    insertSchedule.run("barber-rico", 5, 9, 19);
+    insertSchedule.run("barber-rico", 6, 9, 19);
+    insertSchedule.run("barber-rico", 0, 10, 17); // Sunday
+
+    // Services - The Master Barber Experience
+    insertService.run(
+      "svc-signature",
+      "The MBE Signature Experience",
+      "Haircut, scalp treatment, hot towel, shampoo, condition, facial wash, scrub, cleanse, shave, hot scented towel, rose water eye pads, clay facial mask, ears & nose wax. With bourbon or wine.",
+      90,
+      125
+    );
+    insertService.run(
+      "svc-grooming",
+      "Grooming Experience",
+      "Haircut, shampoo, conditioning, hot towel, facial, beard trim, blow dry, neck cleanup, ear/nose/eyebrow grooming.",
+      60,
+      75
+    );
+    insertService.run(
+      "svc-shaving",
+      "Shaving Experience",
+      "Haircut, shampoo, conditioning, hot towel, traditional shave with pre-shave oil, hot lather, chilled scented towel.",
+      75,
+      95
+    );
+    insertService.run(
+      "svc-haircut",
+      "Classic Haircut",
+      "Standalone haircut with styling.",
+      45,
+      45
+    );
+    insertService.run(
+      "svc-edgeup",
+      "Edge-Up / Lineup",
+      "Quick edge cleanup.",
+      20,
+      25
+    );
+    insertService.run(
+      "svc-kids",
+      "Kid's Haircut",
+      "For children under 12.",
+      30,
+      30
+    );
+    insertService.run(
+      "svc-wax",
+      "Ear & Nose Wax",
+      "Quick grooming.",
+      15,
+      15
+    );
+    insertService.run(
+      "svc-beard",
+      "Beard Trim",
+      "Standalone beard shaping.",
+      30,
+      35
+    );
 
     // Seed appointment
     const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-    insertAppt.run("appt-1", "customer-1", "barber-jordan", "svc-classic", tomorrow, "confirmed", "Keep the top textured");
+    insertAppt.run("appt-1", "customer-1", "barber-edwin", "svc-signature", tomorrow, "confirmed", "First-time client");
   });
 
   seedTx();
@@ -122,11 +199,11 @@ seed();
 
 // -- Services ---------------------------------------------------------------
 export function getAllServices(): Service[] {
-  return db.prepare("SELECT id, name, durationMinutes, price FROM services").all() as Service[];
+  return db.prepare("SELECT id, name, description, durationMinutes, price FROM services").all() as Service[];
 }
 
 export function getServiceById(id: string): Service | undefined {
-  return db.prepare("SELECT id, name, durationMinutes, price FROM services WHERE id = ?").get(id) as Service | undefined;
+  return db.prepare("SELECT id, name, description, durationMinutes, price FROM services WHERE id = ?").get(id) as Service | undefined;
 }
 
 // -- Barbers ----------------------------------------------------------------
