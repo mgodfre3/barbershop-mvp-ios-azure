@@ -42,6 +42,7 @@ struct ContentView: View {
 
 private struct HomeView: View {
     let data: MVPData
+    @State private var selectedAppointment: Appointment?
 
     var body: some View {
         NavigationStack {
@@ -55,6 +56,9 @@ private struct HomeView: View {
                 .padding()
             }
             .navigationTitle("BarberShop MVP")
+            .sheet(item: $selectedAppointment) { appointment in
+                AppointmentDetailView(appointment: appointment)
+            }
         }
     }
 
@@ -82,28 +86,33 @@ private struct HomeView: View {
                 .font(.headline)
 
             ForEach(data.upcomingAppointments) { appointment in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(appointment.service.name)
-                            .font(.subheadline.weight(.semibold))
-                        Spacer()
-                        Text(appointment.status.displayName)
-                            .font(.caption.weight(.semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(statusColor(for: appointment.status).opacity(0.15), in: Capsule())
-                    }
-                    Text("\(appointment.barber.name) • \(appointment.startDate, format: Date.FormatStyle(date: .abbreviated, time: .shortened))")
-                        .foregroundStyle(.secondary)
-                    if !appointment.notes.isEmpty {
-                        Text(appointment.notes)
-                            .font(.caption)
+                Button {
+                    selectedAppointment = appointment
+                } label: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(appointment.service.name)
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            Text(appointment.status.displayName)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(statusColor(for: appointment.status).opacity(0.15), in: Capsule())
+                        }
+                        Text("\(appointment.barber.name) • \(appointment.startDate, format: Date.FormatStyle(date: .abbreviated, time: .shortened))")
                             .foregroundStyle(.secondary)
+                        if !appointment.notes.isEmpty {
+                            Text(appointment.notes)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .buttonStyle(.plain)
             }
         }
     }
@@ -413,7 +422,7 @@ private struct BookingView: View {
                 let slots = try await availabilityRepo.fetchSlots(
                     serviceId: findAPIServiceId(for: serviceID),
                     barberId: selectedBarberID.flatMap { findAPIBarberId(for: $0) },
-                    days: 7
+                    days: 60
                 )
                 availableSlots = slots
             } catch {
@@ -608,6 +617,110 @@ private struct TimeSlotCard: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Appointment Detail View
+
+private struct AppointmentDetailView: View {
+    let appointment: Appointment
+    @Environment(\.dismiss) private var dismiss
+    @State private var showCardEntry = false
+    @State private var paymentSuccess = false
+    @State private var paymentError: String?
+
+    private let paymentRepo: PaymentRepository = APIPaymentRepository(client: APIClient())
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Service") {
+                    LabeledContent("Service", value: appointment.service.name)
+                    LabeledContent("Duration", value: "\(appointment.service.durationMinutes) min")
+                    LabeledContent("Price", value: String(format: "$%.2f", NSDecimalNumber(decimal: appointment.service.price).doubleValue))
+                }
+
+                Section("Appointment") {
+                    LabeledContent("Barber", value: appointment.barber.name)
+                    LabeledContent("Date", value: appointment.startDate.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Status") {
+                        Text(appointment.status.displayName)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(statusColor(for: appointment.status).opacity(0.15), in: Capsule())
+                    }
+                }
+
+                if !appointment.notes.isEmpty {
+                    Section("Notes") {
+                        Text(appointment.notes)
+                    }
+                }
+
+                Section {
+                    Button {
+                        showCardEntry = true
+                    } label: {
+                        Label("Pay Now", systemImage: "creditcard.fill")
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                    .disabled(appointment.status == .cancelled)
+                }
+            }
+            .navigationTitle("Appointment Details")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showCardEntry) {
+                CardEntryView(
+                    amount: appointment.service.price,
+                    onNonceReceived: { nonce in
+                        Task { await processPayment(nonce: nonce) }
+                    },
+                    onCancel: { showCardEntry = false }
+                )
+            }
+            .alert("Payment Successful!", isPresented: $paymentSuccess) {
+                Button("Done") { dismiss() }
+            } message: {
+                Text("Your payment has been processed through Square.")
+            }
+            .alert("Payment Failed", isPresented: .init(
+                get: { paymentError != nil },
+                set: { if !$0 { paymentError = nil } }
+            )) {
+                Button("OK") {}
+            } message: {
+                Text(paymentError ?? "Something went wrong.")
+            }
+        }
+    }
+
+    private func processPayment(nonce: String) async {
+        showCardEntry = false
+        do {
+            _ = try await paymentRepo.processPayment(
+                nonce: nonce,
+                amount: appointment.service.price,
+                customerId: "customer-1",
+                appointmentId: appointment.id.uuidString
+            )
+            paymentSuccess = true
+        } catch {
+            paymentError = error.localizedDescription
+        }
+    }
+
+    private func statusColor(for status: AppointmentStatus) -> Color {
+        switch status {
+        case .requested: return .orange
+        case .confirmed: return .blue
+        case .completed: return .green
+        case .cancelled: return .red
+        }
     }
 }
 

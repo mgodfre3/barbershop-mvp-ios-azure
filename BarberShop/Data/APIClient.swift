@@ -23,19 +23,19 @@ enum APIError: LocalizedError {
 final class APIClient: Sendable {
     let baseURL: URL
 
-    init(baseURL: URL = URL(string: "http://localhost:8080")!) {
+    init(baseURL: URL = URL(string: "http://localhost:8080/")!) {
         self.baseURL = baseURL
     }
 
     func get<T: Decodable>(_ path: String) async throws -> T {
-        let url = baseURL.appendingPathComponent(path)
+        guard let url = URL(string: path, relativeTo: baseURL) else { throw APIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         return try await perform(request)
     }
 
     func post<Body: Encodable, T: Decodable>(_ path: String, body: Body) async throws -> T {
-        let url = baseURL.appendingPathComponent(path)
+        guard let url = URL(string: path, relativeTo: baseURL) else { throw APIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -44,7 +44,7 @@ final class APIClient: Sendable {
     }
 
     func patch<Body: Encodable, T: Decodable>(_ path: String, body: Body) async throws -> T {
-        let url = baseURL.appendingPathComponent(path)
+        guard let url = URL(string: path, relativeTo: baseURL) else { throw APIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")

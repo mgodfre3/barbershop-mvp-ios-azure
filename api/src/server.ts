@@ -244,7 +244,7 @@ app.get("/availability", (req, res) => {
   const querySchema = z.object({
     serviceId: z.string().min(1),
     barberId: z.string().optional(),
-    days: z.coerce.number().int().min(1).max(30).default(7),
+    days: z.coerce.number().int().min(1).max(60).default(7),
   });
 
   const parsed = querySchema.safeParse(req.query);
