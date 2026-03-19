@@ -7,7 +7,10 @@ import {
   mockRewards,
   type Appointment,
   type AppointmentStatus,
+  type CustomerSummary,
   type DayOfWeek,
+  type LedgerEntry,
+  type LedgerEntryType,
 } from "./models.js";
 import {
   getAllServices,
@@ -20,6 +23,7 @@ import {
   getAllAppointments,
   getAppointmentById,
   getAppointmentsByBarber,
+  getAppointmentsByCustomer,
   insertAppointment,
   updateAppointmentStatus,
   countAppointments,
@@ -28,6 +32,9 @@ import {
   deleteOverride,
   getOverridesForDateRange,
   countOverrides,
+  insertLedgerEntry,
+  getLedgerEntriesByCustomer,
+  countLedgerEntries,
 } from "./db.js";
 import { computeAvailability, hasScheduleConflict } from "./availability-engine.js";
 
@@ -348,6 +355,21 @@ app.patch("/appointments/:id", (req, res) => {
   }
 
   updateAppointmentStatus(req.params.id, parsed.data.status as AppointmentStatus);
+
+  // Auto-record cancellation note in ledger
+  if (parsed.data.status === "cancelled" && appointment.status !== "cancelled") {
+    const ledgerEntry: LedgerEntry = {
+      id: `ledger-${countLedgerEntries() + 1}`,
+      customerId: appointment.customerId,
+      appointmentId: appointment.id,
+      type: "cancellation_fee",
+      amount: 0,
+      description: `Appointment ${appointment.id} cancelled`,
+      createdAt: new Date().toISOString(),
+    };
+    insertLedgerEntry(ledgerEntry);
+  }
+
   return res.json({ ...appointment, status: parsed.data.status });
 });
 
@@ -391,6 +413,8 @@ app.post("/payments/process", async (req, res) => {
     currency: z.string().length(3).default("USD"),
     appointmentId: z.string().optional(),
     customerId: z.string().optional(),
+    type: z.enum(["holding_fee", "service_payment", "refund"]).optional(),
+    description: z.string().optional(),
   });
 
   const parsed = bodySchema.safeParse(req.body);
@@ -398,7 +422,7 @@ app.post("/payments/process", async (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  const { nonce, amount, currency, appointmentId, customerId } = parsed.data;
+  const { nonce, amount, currency, appointmentId, customerId, type, description } = parsed.data;
   const idempotencyKey = `${appointmentId ?? "anon"}-${Date.now()}`;
 
   try {
@@ -413,6 +437,21 @@ app.post("/payments/process", async (req, res) => {
       locationId,
       note: appointmentId ? `Appointment: ${appointmentId}` : undefined,
     });
+
+    // Auto-record ledger entry on successful payment
+    if (customerId && payment.payment?.id) {
+      const ledgerEntry: LedgerEntry = {
+        id: `ledger-${countLedgerEntries() + 1}`,
+        customerId,
+        appointmentId,
+        type: (type ?? "service_payment") as LedgerEntryType,
+        amount,
+        description: description ?? `Payment for ${type ?? "service"}`,
+        squarePaymentId: payment.payment.id,
+        createdAt: new Date().toISOString(),
+      };
+      insertLedgerEntry(ledgerEntry);
+    }
 
     return res.status(201).json({
       ok: true,
@@ -519,6 +558,60 @@ app.post("/square/webhooks", (req, res) => {
     eventType,
     message: "Square webhook received and queued for processing",
   });
+});
+
+// ============================================================================
+// CUSTOMER LEDGER & SUMMARY
+// ============================================================================
+app.get("/customers/:customerId/ledger", (req, res) => {
+  const customerId = req.params.customerId;
+  const entries = getLedgerEntriesByCustomer(customerId);
+
+  const totalPaid = entries
+    .filter((e) => e.type === "holding_fee" || e.type === "service_payment")
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  const totalOwed = entries
+    .filter((e) => e.type === "refund")
+    .reduce((sum, e) => sum - e.amount, 0);
+
+  return res.json({
+    customerId,
+    entries,
+    summary: {
+      totalPaid,
+      totalOwed,
+    },
+  });
+});
+
+app.get("/customers/:customerId/summary", (req, res) => {
+  const customerId = req.params.customerId;
+  const appointments = getAppointmentsByCustomer(customerId);
+  const ledgerEntries = getLedgerEntriesByCustomer(customerId);
+
+  const totalAppointments = appointments.length;
+  const servicesCompleted = appointments.filter((a) => a.status === "completed").length;
+  const activeAppointments = appointments.filter((a) => a.status === "requested" || a.status === "confirmed").length;
+
+  const totalSpent = ledgerEntries
+    .filter((e) => e.type === "holding_fee" || e.type === "service_payment")
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  const holdingFeesPaid = ledgerEntries
+    .filter((e) => e.type === "holding_fee")
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  const summary: CustomerSummary = {
+    customerId,
+    totalAppointments,
+    totalSpent,
+    holdingFeesPaid,
+    servicesCompleted,
+    activeAppointments,
+  };
+
+  return res.json(summary);
 });
 
 // ============================================================================

@@ -7,6 +7,8 @@ import type {
   Barber,
   DayOfWeek,
   DaySchedule,
+  LedgerEntry,
+  LedgerEntryType,
   ScheduleOverride,
   Service,
   TimeOffEntry,
@@ -72,6 +74,17 @@ db.exec(`
     startAt TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'requested',
     notes TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS customer_ledger (
+    id TEXT PRIMARY KEY,
+    customerId TEXT NOT NULL,
+    appointmentId TEXT,
+    type TEXT NOT NULL,
+    amount REAL NOT NULL,
+    description TEXT,
+    squarePaymentId TEXT,
+    createdAt TEXT DEFAULT (datetime('now'))
   );
 `);
 
@@ -324,6 +337,38 @@ export function countTimeOff(barberId: string): number {
 
 export function countOverrides(barberId: string): number {
   return (db.prepare("SELECT COUNT(*) as c FROM schedule_overrides WHERE barberId = ?").get(barberId) as any).c;
+}
+
+// -- Customer Ledger --------------------------------------------------------
+export function insertLedgerEntry(entry: LedgerEntry): void {
+  db.prepare(
+    "INSERT INTO customer_ledger (id, customerId, appointmentId, type, amount, description, squarePaymentId, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    entry.id,
+    entry.customerId,
+    entry.appointmentId ?? null,
+    entry.type,
+    entry.amount,
+    entry.description ?? null,
+    entry.squarePaymentId ?? null,
+    entry.createdAt,
+  );
+}
+
+export function getLedgerEntriesByCustomer(customerId: string): LedgerEntry[] {
+  return db
+    .prepare("SELECT id, customerId, appointmentId, type, amount, description, squarePaymentId, createdAt FROM customer_ledger WHERE customerId = ? ORDER BY createdAt DESC")
+    .all(customerId) as LedgerEntry[];
+}
+
+export function countLedgerEntries(): number {
+  return (db.prepare("SELECT COUNT(*) as c FROM customer_ledger").get() as any).c;
+}
+
+export function getAppointmentsByCustomer(customerId: string): Appointment[] {
+  return db
+    .prepare("SELECT id, customerId, barberId, serviceId, startAt, status, notes FROM appointments WHERE customerId = ?")
+    .all(customerId) as Appointment[];
 }
 
 export default db;

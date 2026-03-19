@@ -74,3 +74,25 @@ export const mockRewards: RewardSummary = {
   pointsToNextReward: 30,
   tier: "Gold"
 };
+
+export type LedgerEntryType = "holding_fee" | "service_payment" | "refund" | "cancellation_fee";
+
+export type LedgerEntry = {
+  id: string;
+  customerId: string;
+  appointmentId?: string;
+  type: LedgerEntryType;
+  amount: number;
+  description?: string;
+  squarePaymentId?: string;
+  createdAt: string;
+};
+
+export type CustomerSummary = {
+  customerId: string;
+  totalAppointments: number;
+  totalSpent: number;
+  holdingFeesPaid: number;
+  servicesCompleted: number;
+  activeAppointments: number;
+};
