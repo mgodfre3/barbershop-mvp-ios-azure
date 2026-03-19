@@ -23,6 +23,15 @@ export type TimeOffEntry = {
   reason?: string;
 };
 
+export type ScheduleOverride = {
+  id: string;
+  barberId: string;
+  date: string;      // YYYY-MM-DD
+  startHour: number; // 0-23; if startHour === endHour === 0, barber is off
+  endHour: number;   // 0-24
+  reason?: string;
+};
+
 export type Barber = {
   id: string;
   name: string;
@@ -57,54 +66,6 @@ export type RewardSummary = {
   pointsToNextReward: number;
   tier: string;
 };
-
-export const mockServices: Service[] = [
-  { id: "svc-classic", name: "Classic Cut", durationMinutes: 45, price: 35 },
-  { id: "svc-beard", name: "Beard Trim", durationMinutes: 25, price: 20 },
-  { id: "svc-premium", name: "Premium Package", durationMinutes: 60, price: 55 }
-];
-
-// Seeded schedules: Jordan Mon-Fri 9-17, Alex Tue-Sat 10-18
-export const mockBarbers: Barber[] = [
-  {
-    id: "barber-jordan",
-    name: "Jordan",
-    specialty: "Fades & tapers",
-    schedule: [
-      { day: 1, startHour: 9, endHour: 17 },
-      { day: 2, startHour: 9, endHour: 17 },
-      { day: 3, startHour: 9, endHour: 17 },
-      { day: 4, startHour: 9, endHour: 17 },
-      { day: 5, startHour: 9, endHour: 17 },
-    ],
-    timeOff: [],
-  },
-  {
-    id: "barber-alex",
-    name: "Alex",
-    specialty: "Beard design",
-    schedule: [
-      { day: 2, startHour: 10, endHour: 18 },
-      { day: 3, startHour: 10, endHour: 18 },
-      { day: 4, startHour: 10, endHour: 18 },
-      { day: 5, startHour: 10, endHour: 18 },
-      { day: 6, startHour: 10, endHour: 18 },
-    ],
-    timeOff: [],
-  },
-];
-
-export const mockAppointments: Appointment[] = [
-  {
-    id: "appt-1",
-    customerId: "customer-1",
-    barberId: "barber-jordan",
-    serviceId: "svc-classic",
-    startAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    status: "confirmed",
-    notes: "Keep the top textured"
-  }
-];
 
 export const mockRewards: RewardSummary = {
   customerId: "customer-1",

@@ -4,14 +4,31 @@ import { z } from "zod";
 import { squareClient } from "./square-client.js";
 import type { Currency } from "square";
 import {
-  mockAppointments,
-  mockBarbers,
   mockRewards,
-  mockServices,
   type Appointment,
   type AppointmentStatus,
   type DayOfWeek,
 } from "./models.js";
+import {
+  getAllServices,
+  getServiceById,
+  getAllBarbers,
+  getBarberById,
+  replaceBarberSchedule,
+  addTimeOff,
+  countTimeOff,
+  getAllAppointments,
+  getAppointmentById,
+  getAppointmentsByBarber,
+  insertAppointment,
+  updateAppointmentStatus,
+  countAppointments,
+  getBarberOverrides,
+  addOverride,
+  deleteOverride,
+  getOverridesForDateRange,
+  countOverrides,
+} from "./db.js";
 import { computeAvailability, hasScheduleConflict } from "./availability-engine.js";
 
 const app = express();
@@ -81,19 +98,30 @@ app.post("/auth/login", (_req, res) => {
 // For MVP, return mock data. Real implementation would call catalogApi.
 app.get("/services", (_req, res) => {
   // TODO: Call catalogApi.listCatalog() to fetch real services from Square
-  res.json(mockServices);
+  res.json(getAllServices());
 });
 
 // ============================================================================
 // BARBERS (Azure-owned: barbershop-specific metadata)
 // ============================================================================
 app.get("/barbers", (_req, res) => {
-  // Include computed isAvailableToday based on schedule
-  const today = new Date().getDay();
-  const enriched = mockBarbers.map((b) => ({
-    ...b,
-    isAvailableToday: b.schedule.some((s) => s.day === today),
-  }));
+  // Include computed isAvailableToday based on schedule + overrides
+  const today = new Date();
+  const todayStr = today.toISOString().split("T")[0];
+  const dayOfWeek = today.getDay();
+
+  const barbers = getAllBarbers();
+  const enriched = barbers.map((b) => {
+    const overrides = getOverridesForDateRange(b.id, todayStr, todayStr);
+    const override = overrides.find((o) => o.date === todayStr);
+    let isAvailableToday: boolean;
+    if (override) {
+      isAvailableToday = !(override.startHour === 0 && override.endHour === 0);
+    } else {
+      isAvailableToday = b.schedule.some((s) => s.day === dayOfWeek);
+    }
+    return { ...b, isAvailableToday };
+  });
   res.json(enriched);
 });
 
@@ -103,7 +131,7 @@ app.get("/barbers", (_req, res) => {
 const dayOfWeekSchema = z.number().int().min(0).max(6);
 
 app.put("/barbers/:id/schedule", (req, res) => {
-  const barber = mockBarbers.find((b) => b.id === req.params.id);
+  const barber = getBarberById(req.params.id);
   if (!barber) return res.status(404).json({ error: "Barber not found" });
 
   const bodySchema = z.object({
@@ -119,23 +147,26 @@ app.put("/barbers/:id/schedule", (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  barber.schedule = parsed.data.schedule.map((s) => ({
+  const schedule = parsed.data.schedule.map((s) => ({
     day: s.day as DayOfWeek,
     startHour: s.startHour,
     endHour: s.endHour,
   }));
 
-  return res.json({ message: "Schedule updated", barber });
+  replaceBarberSchedule(barber.id, schedule);
+  const updated = getBarberById(barber.id)!;
+
+  return res.json({ message: "Schedule updated", barber: updated });
 });
 
 app.get("/barbers/:id/time-off", (req, res) => {
-  const barber = mockBarbers.find((b) => b.id === req.params.id);
+  const barber = getBarberById(req.params.id);
   if (!barber) return res.status(404).json({ error: "Barber not found" });
   return res.json(barber.timeOff);
 });
 
 app.post("/barbers/:id/time-off", (req, res) => {
-  const barber = mockBarbers.find((b) => b.id === req.params.id);
+  const barber = getBarberById(req.params.id);
   if (!barber) return res.status(404).json({ error: "Barber not found" });
 
   const bodySchema = z.object({
@@ -149,13 +180,61 @@ app.post("/barbers/:id/time-off", (req, res) => {
   }
 
   const entry = {
-    id: `to-${barber.timeOff.length + 1}`,
+    id: `to-${countTimeOff(barber.id) + 1}`,
     barberId: barber.id,
     ...parsed.data,
   };
-  barber.timeOff.push(entry);
+  addTimeOff(entry);
 
   return res.status(201).json(entry);
+});
+
+// ============================================================================
+// SCHEDULE OVERRIDES (Azure-owned: one-off date overrides)
+// ============================================================================
+app.get("/barbers/:id/overrides", (req, res) => {
+  const barber = getBarberById(req.params.id);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+  return res.json(getBarberOverrides(barber.id));
+});
+
+app.post("/barbers/:id/overrides", (req, res) => {
+  const barber = getBarberById(req.params.id);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+
+  const bodySchema = z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    startHour: z.number().int().min(0).max(23),
+    endHour: z.number().int().min(0).max(24),
+    reason: z.string().optional(),
+  }).refine(
+    (d) => (d.startHour === 0 && d.endHour === 0) || d.endHour > d.startHour,
+    { message: "endHour must be after startHour (or both 0 for day off)" },
+  );
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+  }
+
+  const override = {
+    id: `ovr-${countOverrides(barber.id) + 1}-${Date.now()}`,
+    barberId: barber.id,
+    ...parsed.data,
+  };
+  addOverride(override);
+
+  return res.status(201).json(override);
+});
+
+app.delete("/barbers/:id/overrides/:overrideId", (req, res) => {
+  const barber = getBarberById(req.params.id);
+  if (!barber) return res.status(404).json({ error: "Barber not found" });
+
+  const deleted = deleteOverride(req.params.overrideId, barber.id);
+  if (!deleted) return res.status(404).json({ error: "Override not found" });
+
+  return res.json({ message: "Override deleted" });
 });
 
 // ============================================================================
@@ -174,22 +253,27 @@ app.get("/availability", (req, res) => {
   }
 
   const { serviceId, barberId, days } = parsed.data;
-  const service = mockServices.find((s) => s.id === serviceId);
+  const service = getServiceById(serviceId);
   if (!service) {
     return res.status(404).json({ error: "Service not found" });
   }
 
   const candidates = barberId
-    ? mockBarbers.filter((b) => b.id === barberId)
-    : mockBarbers;
+    ? getAllBarbers().filter((b) => b.id === barberId)
+    : getAllBarbers();
 
   const startDate = new Date();
   const endDate = new Date();
   endDate.setDate(endDate.getDate() + days);
 
-  const allSlots = candidates.flatMap((barber) =>
-    computeAvailability(barber, service, mockAppointments, startDate, endDate)
-  );
+  const endDateStr = endDate.toISOString().split("T")[0];
+  const startDateStr = startDate.toISOString().split("T")[0];
+  const appointments = getAllAppointments();
+
+  const allSlots = candidates.flatMap((barber) => {
+    const overrides = getOverridesForDateRange(barber.id, startDateStr, endDateStr);
+    return computeAvailability(barber, service, appointments, startDate, endDate, overrides);
+  });
 
   // Sort by date/time
   allSlots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
@@ -203,7 +287,7 @@ app.get("/availability", (req, res) => {
 // Track appointment lifecycle (requested → confirmed → completed → cancelled)
 // This is custom barber business logic, not Square's generic Bookings.
 app.get("/appointments", (_req, res) => {
-  res.json(mockAppointments);
+  res.json(getAllAppointments());
 });
 
 app.post("/appointments", (req, res) => {
@@ -221,25 +305,27 @@ app.post("/appointments", (req, res) => {
   }
 
   // Validate barber and service exist
-  const barber = mockBarbers.find((b) => b.id === parsed.data.barberId);
+  const barber = getBarberById(parsed.data.barberId);
   if (!barber) return res.status(404).json({ error: "Barber not found" });
 
-  const service = mockServices.find((s) => s.id === parsed.data.serviceId);
+  const service = getServiceById(parsed.data.serviceId);
   if (!service) return res.status(404).json({ error: "Service not found" });
 
-  // Check schedule conflict
+  // Check schedule conflict (with overrides)
   const proposedStart = new Date(parsed.data.startAt);
-  const conflict = hasScheduleConflict(barber, service, proposedStart, mockAppointments);
+  const dateStr = proposedStart.toISOString().split("T")[0];
+  const overrides = getOverridesForDateRange(barber.id, dateStr, dateStr);
+  const conflict = hasScheduleConflict(barber, service, proposedStart, getAllAppointments(), overrides);
   if (conflict.conflict) {
     return res.status(409).json({ error: "Schedule conflict", reason: conflict.reason });
   }
 
   const appointment: Appointment = {
-    id: `appt-${mockAppointments.length + 1}`,
+    id: `appt-${countAppointments() + 1}`,
     status: "requested",
     ...parsed.data,
   };
-  mockAppointments.push(appointment);
+  insertAppointment(appointment);
 
   return res.status(201).json(appointment);
 });
@@ -256,13 +342,13 @@ app.patch("/appointments/:id", (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  const appointment = mockAppointments.find((item) => item.id === req.params.id);
+  const appointment = getAppointmentById(req.params.id);
   if (!appointment) {
     return res.status(404).json({ error: "Appointment not found" });
   }
 
-  appointment.status = parsed.data.status as AppointmentStatus;
-  return res.json(appointment);
+  updateAppointmentStatus(req.params.id, parsed.data.status as AppointmentStatus);
+  return res.json({ ...appointment, status: parsed.data.status });
 });
 
 // ============================================================================

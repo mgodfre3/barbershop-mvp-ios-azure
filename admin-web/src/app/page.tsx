@@ -1,9 +1,11 @@
+import Link from "next/link";
+
 const sections = [
-  { title: "Appointments", description: "View, approve, and manage appointment queue" },
-  { title: "Customers (CRM)", description: "Search, notes, tags, and retention status" },
-  { title: "Rewards", description: "Adjust points and review ledger history" },
-  { title: "Schedules", description: "Configure barber working hours and time off" },
-  { title: "Square Sync", description: "Webhook status and order reconciliation" },
+  { title: "Appointments", description: "View, approve, and manage appointment queue", href: null },
+  { title: "Customers (CRM)", description: "Search, notes, tags, and retention status", href: null },
+  { title: "Rewards", description: "Adjust points and review ledger history", href: null },
+  { title: "Schedules", description: "Configure barber working hours and time off", href: "/schedules" },
+  { title: "Square Sync", description: "Webhook status and order reconciliation", href: null },
 ];
 
 export default function HomePage() {
@@ -28,10 +30,21 @@ export default function HomePage() {
                 backgroundColor: "#f9f9f9",
               }}
             >
-              <h3 style={{ margin: "0 0 4px 0" }}>{section.title}</h3>
-              <p style={{ margin: 0, color: "#666", fontSize: "14px" }}>
-                {section.description}
-              </p>
+              {section.href ? (
+                <Link href={section.href} style={{ textDecoration: "none", color: "inherit" }}>
+                  <h3 style={{ margin: "0 0 4px 0", color: "#0070f3" }}>{section.title} →</h3>
+                  <p style={{ margin: 0, color: "#666", fontSize: "14px" }}>
+                    {section.description}
+                  </p>
+                </Link>
+              ) : (
+                <>
+                  <h3 style={{ margin: "0 0 4px 0" }}>{section.title}</h3>
+                  <p style={{ margin: 0, color: "#666", fontSize: "14px" }}>
+                    {section.description}
+                  </p>
+                </>
+              )}
             </li>
           ))}
         </ul>

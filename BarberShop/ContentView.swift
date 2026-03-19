@@ -205,6 +205,7 @@ private struct BookingView: View {
     @State private var availableSlots: [AvailabilitySlot] = []
     @State private var selectedSlot: AvailabilitySlot?
     @State private var isLoadingSlots = false
+    @State private var selectedDate: Date = Date()
 
     private let availabilityRepo: AvailabilityRepository = APIAvailabilityRepository(client: APIClient())
     private let paymentRepo: PaymentRepository = APIPaymentRepository(client: APIClient())
@@ -242,33 +243,74 @@ private struct BookingView: View {
                         Text("No slots available. Try a different barber or service.")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(slotsByDate, id: \.date) { group in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(group.displayDate)
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                FlowLayout(spacing: 8) {
-                                    ForEach(group.slots) { slot in
-                                        Button {
-                                            selectedSlot = slot
-                                        } label: {
-                                            VStack(spacing: 2) {
-                                                Text(slot.startDate, format: .dateTime.hour().minute())
-                                                    .font(.subheadline.weight(.medium))
-                                                Text(slot.barberName)
-                                                    .font(.caption2)
+                        VStack(alignment: .leading, spacing: 16) {
+                            // Date strip
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 12) {
+                                    ForEach(availableDates, id: \.self) { date in
+                                        DatePillButton(
+                                            date: date,
+                                            isSelected: Calendar.current.isDate(date, inSameDayAs: selectedDate),
+                                            action: {
+                                                withAnimation(.easeInOut(duration: 0.2)) {
+                                                    selectedDate = date
+                                                    selectedSlot = nil
+                                                }
                                             }
-                                            .padding(.horizontal, 12)
-                                            .padding(.vertical, 8)
-                                            .background(selectedSlot?.id == slot.id ? Color.brown : Color.brown.opacity(0.1))
-                                            .foregroundStyle(selectedSlot?.id == slot.id ? .white : .primary)
-                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                        )
+                                    }
+                                }
+                                .padding(.horizontal, 4)
+                            }
+                            
+                            // Time grid for selected date
+                            let slotsForSelectedDate = slotsForDate(selectedDate)
+                            if slotsForSelectedDate.isEmpty {
+                                VStack(spacing: 8) {
+                                    Text("No availability on this date")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                    Text("Try selecting another day")
+                                        .font(.caption)
+                                        .foregroundStyle(Color.secondary.opacity(0.6))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 20)
+                            } else {
+                                if selectedBarberID == nil {
+                                    // Group by barber when "No preference"
+                                    ForEach(groupSlotsByBarber(slotsForSelectedDate), id: \.barberName) { group in
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Text(group.barberName)
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(.secondary)
+                                            
+                                            FlowLayout(spacing: 8) {
+                                                ForEach(group.slots) { slot in
+                                                    TimeSlotCard(
+                                                        slot: slot,
+                                                        isSelected: selectedSlot?.id == slot.id,
+                                                        action: { selectedSlot = slot }
+                                                    )
+                                                }
+                                            }
                                         }
-                                        .buttonStyle(.plain)
+                                    }
+                                } else {
+                                    // Single barber selected
+                                    FlowLayout(spacing: 8) {
+                                        ForEach(slotsForSelectedDate) { slot in
+                                            TimeSlotCard(
+                                                slot: slot,
+                                                isSelected: selectedSlot?.id == slot.id,
+                                                action: { selectedSlot = slot }
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
+                        .padding(.vertical, 4)
                     }
                 }
 
@@ -294,6 +336,11 @@ private struct BookingView: View {
             }
             .onChange(of: selectedServiceID) { loadSlots() }
             .onChange(of: selectedBarberID) { loadSlots() }
+            .onChange(of: availableSlots) {
+                if !availableSlots.isEmpty && availableDates.contains(where: { Calendar.current.isDate($0, inSameDayAs: selectedDate) }) == false {
+                    selectedDate = availableDates.first ?? Date()
+                }
+            }
             .task { loadSlots() }
             .alert("Appointment Requested!", isPresented: $showConfirmation) {
                 Button("Pay Now") { showCardEntry = true }
@@ -326,26 +373,32 @@ private struct BookingView: View {
         }
     }
 
-    // MARK: - Slot grouping
+    // MARK: - Slot grouping and filtering
 
-    private struct DateGroup: Hashable {
-        let date: String
-        let displayDate: String
+    private struct BarberGroup {
+        let barberName: String
         let slots: [AvailabilitySlot]
     }
-
-    private var slotsByDate: [DateGroup] {
-        let grouped = Dictionary(grouping: availableSlots, by: \.date)
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-
-        let displayFormatter = DateFormatter()
-        displayFormatter.dateStyle = .medium
-
-        return grouped.keys.sorted().prefix(5).map { dateStr in
-            let display = dateFormatter.date(from: dateStr).map { displayFormatter.string(from: $0) } ?? dateStr
-            return DateGroup(date: dateStr, displayDate: display, slots: grouped[dateStr] ?? [])
+    
+    private var availableDates: [Date] {
+        let calendar = Calendar.current
+        let dates = availableSlots.compactMap { slot -> Date? in
+            calendar.startOfDay(for: slot.startDate)
         }
+        return Array(Set(dates)).sorted()
+    }
+    
+    private func slotsForDate(_ date: Date) -> [AvailabilitySlot] {
+        let calendar = Calendar.current
+        return availableSlots.filter { slot in
+            calendar.isDate(slot.startDate, inSameDayAs: date)
+        }.sorted { $0.startDate < $1.startDate }
+    }
+    
+    private func groupSlotsByBarber(_ slots: [AvailabilitySlot]) -> [BarberGroup] {
+        let grouped = Dictionary(grouping: slots, by: \.barberName)
+        return grouped.map { BarberGroup(barberName: $0.key, slots: $0.value.sorted { $0.startDate < $1.startDate }) }
+            .sorted { $0.barberName < $1.barberName }
     }
 
     // MARK: - Data loading
@@ -474,6 +527,87 @@ private struct FlowLayout: Layout {
         }
 
         return (offsets, CGSize(width: maxX, height: y + rowHeight))
+    }
+}
+
+// MARK: - Date Pill Button
+private struct DatePillButton: View {
+    let date: Date
+    let isSelected: Bool
+    let action: () -> Void
+    
+    private var dayName: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE"
+        return formatter.string(from: date)
+    }
+    
+    private var dayNumber: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d"
+        return formatter.string(from: date)
+    }
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Text(dayName)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(isSelected ? .white : .secondary)
+                Text(dayNumber)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(isSelected ? .white : .primary)
+            }
+            .frame(width: 60, height: 60)
+            .background(isSelected ? Color.brown : Color.brown.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Time Slot Card
+private struct TimeSlotCard: View {
+    let slot: AvailabilitySlot
+    let isSelected: Bool
+    let action: () -> Void
+    
+    private var timeString: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "h:mm a"
+        return formatter.string(from: slot.startDate)
+    }
+    
+    private var durationString: String {
+        let calendar = Calendar.current
+        let minutes = calendar.dateComponents([.minute], from: slot.startDate, to: slot.endDate).minute ?? 0
+        return "\(minutes) min"
+    }
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(timeString)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(isSelected ? .white : .primary)
+                Text(slot.barberName)
+                    .font(.caption)
+                    .foregroundStyle(isSelected ? .white.opacity(0.9) : .secondary)
+                Text(durationString)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? .white.opacity(0.8) : Color.secondary.opacity(0.6))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(minWidth: 100, alignment: .leading)
+            .background(isSelected ? Color.brown : Color.brown.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(isSelected ? Color.brown : Color.brown.opacity(0.2), lineWidth: isSelected ? 2 : 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
