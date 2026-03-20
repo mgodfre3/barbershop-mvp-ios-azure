@@ -16,6 +16,9 @@ import type { CatalogObject } from "square";
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
 const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID || "LJJWSM6MHA21M";
+const SQUARE_APP_ID = process.env.SQUARE_APP_ID || "sq0idp-rVH2MiAbH0PGniY6PwyIZA";
+const SQUARE_APP_SECRET = process.env.SQUARE_APP_SECRET || "";
+const OAUTH_CALLBACK_URL = process.env.OAUTH_CALLBACK_URL || "http://localhost:8080/auth/square/callback";
 
 app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
 app.use(express.json());
@@ -707,6 +710,102 @@ app.post("/crm/notes", (req, res) => {
     ...parsed.data,
     createdAt: new Date().toISOString(),
   });
+});
+
+// ============================================================================
+// SQUARE OAUTH (connect Edwin's account)
+// ============================================================================
+const OAUTH_SCOPES = [
+  "ITEMS_READ",
+  "MERCHANT_PROFILE_READ",
+  "CUSTOMERS_READ",
+  "CUSTOMERS_WRITE",
+  "APPOINTMENTS_READ",
+  "APPOINTMENTS_WRITE",
+  "APPOINTMENTS_BUSINESS_SETTINGS_READ",
+  "PAYMENTS_READ",
+  "PAYMENTS_WRITE",
+  "ORDERS_READ",
+].join("+");
+
+let oauthState = "";
+
+app.get("/auth/square", (_req, res) => {
+  oauthState = Math.random().toString(36).substring(2, 15);
+  const baseUrl = process.env.NODE_ENV === "production"
+    ? "https://connect.squareup.com"
+    : "https://connect.squareupsandbox.com";
+  const authUrl = `${baseUrl}/oauth2/authorize?client_id=${SQUARE_APP_ID}&scope=${OAUTH_SCOPES}&state=${oauthState}&redirect_uri=${encodeURIComponent(OAUTH_CALLBACK_URL)}`;
+  res.redirect(authUrl);
+});
+
+app.get("/auth/square/callback", async (req, res) => {
+  const { code, state } = req.query;
+
+  if (state !== oauthState) {
+    return res.status(403).json({ error: "Invalid state parameter" });
+  }
+
+  if (!code || typeof code !== "string") {
+    return res.status(400).json({ error: "Missing authorization code" });
+  }
+
+  try {
+    const baseUrl = process.env.NODE_ENV === "production"
+      ? "https://connect.squareup.com"
+      : "https://connect.squareupsandbox.com";
+
+    const tokenResponse = await fetch(`${baseUrl}/oauth2/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: SQUARE_APP_ID,
+        client_secret: SQUARE_APP_SECRET,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: OAUTH_CALLBACK_URL,
+      }),
+    });
+
+    const tokenData = await tokenResponse.json() as Record<string, unknown>;
+
+    if (tokenData.access_token) {
+      // In production, store this securely. For now, display it.
+      return res.send(`
+        <html>
+        <head><title>MBE - Square Connected!</title></head>
+        <body style="font-family: system-ui; max-width: 600px; margin: 80px auto; text-align: center;">
+          <h1 style="color: #2d7d46;">✅ Square Account Connected!</h1>
+          <p>The Master Barber Experience app now has access to your Square account.</p>
+          <p style="color: #666;">You can close this window.</p>
+          <hr style="margin: 30px 0;">
+          <details>
+            <summary style="cursor:pointer; color: #999;">Developer Info</summary>
+            <pre style="text-align:left; background:#f5f5f5; padding:15px; border-radius:8px; overflow:auto; font-size:12px;">
+Access Token: ${(tokenData.access_token as string).substring(0, 20)}...
+Merchant ID: ${tokenData.merchant_id}
+Expires: ${tokenData.expires_at}
+Refresh Token: ${(tokenData.refresh_token as string).substring(0, 20)}...
+
+Add to your api/.env:
+SQUARE_API_KEY=${tokenData.access_token}
+            </pre>
+          </details>
+        </body>
+        </html>
+      `);
+    } else {
+      return res.status(400).json({
+        error: "OAuth token exchange failed",
+        details: tokenData,
+      });
+    }
+  } catch (error: any) {
+    return res.status(500).json({
+      error: "OAuth callback failed",
+      message: error?.message ?? "Unknown error",
+    });
+  }
 });
 
 // ============================================================================
