@@ -1,0 +1,13 @@
+# Render.com deployment
+# Create a new Web Service, connect your repo, set:
+#   Root Directory: api
+#   Build Command: npm install && npx tsc -p tsconfig.json
+#   Start Command: node dist/server.js
+
+# Environment variables to set in Render dashboard:
+#   SQUARE_API_KEY        = (Edwin's production access token)
+#   SQUARE_APP_ID         = sq0idp-rVH2MiAbH0PGniY6PwyIZA
+#   SQUARE_APP_SECRET     = (from Square Developer Dashboard)
+#   SQUARE_LOCATION_ID    = LJJWSM6MHA21M
+#   NODE_ENV              = production
+#   OAUTH_CALLBACK_URL    = https://YOUR-APP.onrender.com/auth/square/callback

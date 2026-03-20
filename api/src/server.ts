@@ -809,6 +809,78 @@ SQUARE_API_KEY=${tokenData.access_token}
 });
 
 // ============================================================================
+// SQUARE CONNECT PAGE (simple self-service for Edwin)
+// ============================================================================
+app.get("/connect", (_req, res) => {
+  const oauthReady = !!SQUARE_APP_SECRET;
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Connect Square - MBE</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>
+        body { font-family: system-ui; max-width: 500px; margin: 60px auto; padding: 20px; background: #111; color: #eee; }
+        h1 { color: #d9a621; }
+        .card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; padding: 24px; margin: 20px 0; }
+        .btn { display: inline-block; background: #d9a621; color: #111; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 16px; border: none; cursor: pointer; }
+        .btn:hover { background: #c4911d; }
+        .btn-disabled { background: #444; color: #888; cursor: not-allowed; }
+        code { background: #2a2a2a; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+        .step { margin: 16px 0; padding-left: 20px; border-left: 3px solid #d9a621; }
+        a { color: #d9a621; }
+      </style>
+    </head>
+    <body>
+      <h1>🪒 Connect Your Square Account</h1>
+      <p>The Master Barber Experience app needs access to your Square account to show your real services, barbers, and availability.</p>
+
+      ${oauthReady ? `
+      <div class="card">
+        <h3>Option 1: One-Click Connect (Recommended)</h3>
+        <p>Click below to sign into Square and authorize the app:</p>
+        <a href="/auth/square" class="btn">Connect with Square</a>
+      </div>
+      ` : `
+      <div class="card">
+        <h3>Option 1: One-Click Connect</h3>
+        <p style="color:#888;">Not available yet — the developer needs to configure OAuth secrets first.</p>
+      </div>
+      `}
+
+      <div class="card">
+        <h3>Option 2: Manual Setup</h3>
+        <p>If the button above doesn't work, you can share your API token directly:</p>
+        <div class="step">
+          <p><strong>Step 1:</strong> Go to <a href="https://developer.squareup.com/apps" target="_blank">Square Developer Dashboard</a></p>
+        </div>
+        <div class="step">
+          <p><strong>Step 2:</strong> Select your application (or create one)</p>
+        </div>
+        <div class="step">
+          <p><strong>Step 3:</strong> Go to <strong>Credentials</strong> tab</p>
+        </div>
+        <div class="step">
+          <p><strong>Step 4:</strong> Copy the <strong>Production Access Token</strong></p>
+        </div>
+        <div class="step">
+          <p><strong>Step 5:</strong> Send the token securely to your developer (not via text — use a password manager or encrypted email)</p>
+        </div>
+        <p style="color: #888; font-size: 13px; margin-top: 16px;">
+          ⚠️ This token gives API access to your Square account. Only share it with people you trust.
+          The app will use it to read your catalog, team members, and bookings.
+        </p>
+      </div>
+
+      <p style="color: #666; font-size: 12px; text-align: center; margin-top: 30px;">
+        The Master Barber Experience • Lake Nona, Orlando
+      </p>
+    </body>
+    </html>
+  `);
+});
+
+// ============================================================================
 // Start server
 // ============================================================================
 app.listen(port, () => {
