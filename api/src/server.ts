@@ -3,42 +3,15 @@ import express from "express";
 import { z } from "zod";
 import { squareClient } from "./square-client.js";
 import type { Currency } from "square";
-import {
-  mockRewards,
-  type Appointment,
-  type AppointmentStatus,
-  type AvailabilitySlot,
-  type CustomerSummary,
-  type DayOfWeek,
-  type LedgerEntry,
-  type LedgerEntryType,
+import type {
+  Appointment,
+  AvailabilitySlot,
+  CustomerSummary,
+  LedgerEntry,
+  LedgerEntryType,
+  Service,
 } from "./models.js";
-import {
-  getAllServices,
-  getServiceById,
-  getAllBarbers,
-  getBarberById,
-  replaceBarberSchedule,
-  addTimeOff,
-  countTimeOff,
-  getAllAppointments,
-  getAppointmentById,
-  getAppointmentsByBarber,
-  getAppointmentsByCustomer,
-  insertAppointment,
-  updateAppointmentStatus,
-  updateAppointmentSquareBookingId,
-  countAppointments,
-  getBarberOverrides,
-  addOverride,
-  deleteOverride,
-  getOverridesForDateRange,
-  countOverrides,
-  insertLedgerEntry,
-  getLedgerEntriesByCustomer,
-  countLedgerEntries,
-} from "./db.js";
-import { computeAvailability, hasScheduleConflict } from "./availability-engine.js";
+import type { CatalogObject } from "square";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
@@ -47,6 +20,22 @@ const SQUARE_LOCATION_ID = process.env.SQUARE_LOCATION_ID || "LJJWSM6MHA21M";
 app.use(cors({ origin: process.env.CORS_ORIGIN ?? "*" }));
 app.use(express.json());
 
+/** Extracts a user-friendly error message from a Square SDK error. */
+function squareErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+/** Standard Square error JSON response. */
+function squareErrorResponse(res: express.Response, statusCode: number, operation: string, error: unknown) {
+  const message = squareErrorMessage(error);
+  console.error(`❌ Square ${operation} failed: ${message}`);
+  return res.status(statusCode).json({
+    error: `Square API error: ${operation}`,
+    message,
+  });
+}
+
 // ============================================================================
 // HEALTH CHECK
 // ============================================================================
@@ -54,8 +43,8 @@ app.get("/health", (_req, res) => {
   res.json({
     status: "ok",
     service: "barbershop-api",
-    architecture: "Square-first with Azure custom logic",
-    timestamp: new Date().toISOString()
+    architecture: "Square-only — no local database",
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -73,14 +62,50 @@ app.get("/square/diagnostics", async (_req, res) => {
       locationIds: locations.map((l) => l.id).filter(Boolean),
       message: "Square credentials are valid.",
     });
-  } catch (error: any) {
-    return res.status(500).json({
-      ok: false,
-      environment: process.env.NODE_ENV === "production" ? "production" : "sandbox",
-      message: "Square credentials failed.",
-      errorType: error?.name ?? "UnknownError",
-      errorMessage: error?.message ?? "No message",
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 500, "locations.list", error);
+  }
+});
+
+// ============================================================================
+// SQUARE RAW CATALOG (for iOS app discovery)
+// ============================================================================
+app.get("/square/catalog", async (_req, res) => {
+  try {
+    const result = await squareClient.catalog.list({ types: "ITEM" });
+    const items = result.data ?? [];
+    return res.json({ items });
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "catalog.list", error);
+  }
+});
+
+// ============================================================================
+// SQUARE TEAM MEMBERS (for iOS app discovery)
+// ============================================================================
+app.get("/square/team-members", async (_req, res) => {
+  try {
+    const result = await squareClient.teamMembers.search({
+      query: {
+        filter: {
+          locationIds: [SQUARE_LOCATION_ID],
+          status: "ACTIVE",
+        },
+      },
     });
+    const members = result.teamMembers ?? [];
+    return res.json({
+      teamMembers: members.map((m) => ({
+        id: m.id,
+        givenName: m.givenName,
+        familyName: m.familyName,
+        emailAddress: m.emailAddress,
+        phoneNumber: m.phoneNumber,
+        status: m.status,
+      })),
+    });
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "teamMembers.search", error);
   }
 });
 
@@ -90,261 +115,121 @@ app.get("/square/diagnostics", async (_req, res) => {
 app.post("/auth/register", (_req, res) => {
   res.status(201).json({
     message: "Registration scaffolded. Wire to Microsoft Entra External ID.",
-    placeholder: true
+    placeholder: true,
   });
 });
 
 app.post("/auth/login", (_req, res) => {
   res.json({
     message: "Login scaffolded. Wire to Microsoft Entra External ID.",
-    placeholder: true
+    placeholder: true,
   });
 });
 
 // ============================================================================
-// CATALOG (Square is source of truth)
+// SERVICES (Square Catalog is source of truth)
 // ============================================================================
-// In production, fetch from Square's Catalog API and sync to cache.
-// For MVP, return mock data. Real implementation would call catalogApi.
-app.get("/services", (_req, res) => {
-  // TODO: Call catalogApi.listCatalog() to fetch real services from Square
-  res.json(getAllServices());
-});
+app.get("/services", async (_req, res) => {
+  try {
+    const result = await squareClient.catalog.list({ types: "ITEM" });
+    const items = result.data ?? [];
 
-// ============================================================================
-// BARBERS (Azure-owned: barbershop-specific metadata)
-// ============================================================================
-app.get("/barbers", (_req, res) => {
-  // Include computed isAvailableToday based on schedule + overrides
-  const today = new Date();
-  const todayStr = today.toISOString().split("T")[0];
-  const dayOfWeek = today.getDay();
+    const services: Service[] = [];
+    for (const item of items) {
+      // Only process ITEM type catalog objects
+      if (!("itemData" in item)) continue;
+      const catalogItem = item as CatalogObject.Item;
+      const itemData = catalogItem.itemData;
+      if (!itemData) continue;
 
-  const barbers = getAllBarbers();
-  const enriched = barbers.map((b) => {
-    const overrides = getOverridesForDateRange(b.id, todayStr, todayStr);
-    const override = overrides.find((o) => o.date === todayStr);
-    let isAvailableToday: boolean;
-    if (override) {
-      isAvailableToday = !(override.startHour === 0 && override.endHour === 0);
-    } else {
-      isAvailableToday = b.schedule.some((s) => s.day === dayOfWeek);
+      const variations = itemData.variations ?? [];
+      for (const variation of variations) {
+        const varObj = variation as CatalogObject.ItemVariation;
+        const varData = varObj.itemVariationData;
+        const priceMoney = varData?.priceMoney;
+        services.push({
+          id: varObj.id ?? catalogItem.id ?? "",
+          name: variations.length > 1
+            ? `${itemData.name} — ${varData?.name ?? "Default"}`
+            : (itemData.name ?? "Unknown Service"),
+          description: itemData.description ?? undefined,
+          durationMinutes: varData?.serviceDuration
+            ? Number(varData.serviceDuration) / 60_000
+            : 60,
+          price: priceMoney?.amount
+            ? Number(priceMoney.amount) / 100
+            : 0,
+        });
+      }
     }
-    return { ...b, isAvailableToday };
-  });
-  res.json(enriched);
-});
 
-// ============================================================================
-// BARBER SCHEDULE MANAGEMENT (Azure-owned)
-// ============================================================================
-const dayOfWeekSchema = z.number().int().min(0).max(6);
+    if (services.length === 0) {
+      return res.json({
+        services: [],
+        message: "No catalog items found in Square. Add services to your Square catalog to see them here.",
+      });
+    }
 
-app.put("/barbers/:id/schedule", (req, res) => {
-  const barber = getBarberById(req.params.id);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
-
-  const bodySchema = z.object({
-    schedule: z.array(z.object({
-      day: dayOfWeekSchema,
-      startHour: z.number().int().min(0).max(23),
-      endHour: z.number().int().min(1).max(24),
-    }).refine((s) => s.endHour > s.startHour, { message: "endHour must be after startHour" })),
-  });
-
-  const parsed = bodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    return res.json(services);
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "catalog.list (services)", error);
   }
-
-  const schedule = parsed.data.schedule.map((s) => ({
-    day: s.day as DayOfWeek,
-    startHour: s.startHour,
-    endHour: s.endHour,
-  }));
-
-  replaceBarberSchedule(barber.id, schedule);
-  const updated = getBarberById(barber.id)!;
-
-  return res.json({ message: "Schedule updated", barber: updated });
-});
-
-app.get("/barbers/:id/time-off", (req, res) => {
-  const barber = getBarberById(req.params.id);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
-  return res.json(barber.timeOff);
-});
-
-app.post("/barbers/:id/time-off", (req, res) => {
-  const barber = getBarberById(req.params.id);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
-
-  const bodySchema = z.object({
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    reason: z.string().optional(),
-  });
-
-  const parsed = bodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
-  }
-
-  const entry = {
-    id: `to-${countTimeOff(barber.id) + 1}`,
-    barberId: barber.id,
-    ...parsed.data,
-  };
-  addTimeOff(entry);
-
-  return res.status(201).json(entry);
 });
 
 // ============================================================================
-// SCHEDULE OVERRIDES (Azure-owned: one-off date overrides)
+// BARBERS (Square Team Members is source of truth)
 // ============================================================================
-app.get("/barbers/:id/overrides", (req, res) => {
-  const barber = getBarberById(req.params.id);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
-  return res.json(getBarberOverrides(barber.id));
-});
-
-app.post("/barbers/:id/overrides", (req, res) => {
-  const barber = getBarberById(req.params.id);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
-
-  const bodySchema = z.object({
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    startHour: z.number().int().min(0).max(23),
-    endHour: z.number().int().min(0).max(24),
-    reason: z.string().optional(),
-  }).refine(
-    (d) => (d.startHour === 0 && d.endHour === 0) || d.endHour > d.startHour,
-    { message: "endHour must be after startHour (or both 0 for day off)" },
-  );
-
-  const parsed = bodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
-  }
-
-  const override = {
-    id: `ovr-${countOverrides(barber.id) + 1}-${Date.now()}`,
-    barberId: barber.id,
-    ...parsed.data,
-  };
-  addOverride(override);
-
-  return res.status(201).json(override);
-});
-
-app.delete("/barbers/:id/overrides/:overrideId", (req, res) => {
-  const barber = getBarberById(req.params.id);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
-
-  const deleted = deleteOverride(req.params.overrideId, barber.id);
-  if (!deleted) return res.status(404).json({ error: "Override not found" });
-
-  return res.json({ message: "Override deleted" });
-});
-
-// ============================================================================
-// AVAILABILITY (Square Bookings → fallback to custom engine)
-// ============================================================================
-app.get("/availability", async (req, res) => {
-  const querySchema = z.object({
-    serviceId: z.string().min(1),
-    barberId: z.string().optional(),
-    days: z.coerce.number().int().min(1).max(60).default(7),
-    serviceVariationId: z.string().optional(),
-    teamMemberIds: z.string().optional(), // comma-separated
-  });
-
-  const parsed = querySchema.safeParse(req.query);
-  if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid query", details: parsed.error.flatten() });
-  }
-
-  const { serviceId, barberId, days, serviceVariationId, teamMemberIds } = parsed.data;
-  const service = getServiceById(serviceId);
-  if (!service) {
-    return res.status(404).json({ error: "Service not found" });
-  }
-
-  // Try Square Bookings API first
-  if (serviceVariationId) {
+app.get("/barbers", async (_req, res) => {
+  try {
+    // Try bookings team member profiles first (richer data for bookable members)
+    let profiles: Array<{ id: string; name: string; specialty: string }> = [];
     try {
-      const startAt = new Date().toISOString();
-      const endDate = new Date();
-      endDate.setDate(endDate.getDate() + days);
-      const endAt = endDate.toISOString();
+      const bookingsResult = await squareClient.bookings.teamMemberProfiles.list();
+      const data = bookingsResult.data ?? [];
+      profiles = data.map((p) => ({
+        id: p.teamMemberId ?? "",
+        name: p.displayName ?? "Unknown",
+        specialty: p.profileImageUrl ? "See profile" : "Barber",
+      }));
+    } catch {
+      // Fall through to team members search
+    }
 
-      const teamFilter = teamMemberIds
-        ? { any: teamMemberIds.split(",").map((id) => id.trim()) }
-        : undefined;
-
-      const result = await squareClient.bookings.searchAvailability({
+    if (profiles.length === 0) {
+      const result = await squareClient.teamMembers.search({
         query: {
           filter: {
-            startAtRange: { startAt, endAt },
-            locationId: SQUARE_LOCATION_ID,
-            segmentFilters: [{
-              serviceVariationId,
-              teamMemberIdFilter: teamFilter,
-            }],
+            locationIds: [SQUARE_LOCATION_ID],
+            status: "ACTIVE",
           },
         },
       });
-
-      const availabilities = result.availabilities ?? [];
-      const slots: AvailabilitySlot[] = availabilities.map((a) => {
-        const segment = a.appointmentSegments?.[0];
-        const startDate = new Date(a.startAt!);
-        const durationMinutes = segment?.durationMinutes ?? service.durationMinutes;
-        const endSlot = new Date(startDate.getTime() + durationMinutes * 60_000);
-
-        return {
-          barberId: segment?.teamMemberId ?? barberId ?? "unknown",
-          barberName: segment?.teamMemberId ?? barberId ?? "unknown",
-          serviceId,
-          date: startDate.toISOString().split("T")[0],
-          startAt: startDate.toISOString(),
-          endAt: endSlot.toISOString(),
-          durationMinutes,
-        };
-      });
-
-      slots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
-
-      console.log(`✅ Square Bookings: returned ${slots.length} availability slots`);
-      return res.json(slots);
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      console.log(`⚠️ Square Bookings searchAvailability failed, falling back to custom engine: ${errMsg}`);
+      const members = result.teamMembers ?? [];
+      profiles = members.map((m) => ({
+        id: m.id ?? "",
+        name: [m.givenName, m.familyName].filter(Boolean).join(" ") || "Unknown",
+        specialty: "Barber",
+      }));
     }
+
+    if (profiles.length === 0) {
+      return res.json({
+        barbers: [],
+        message: "No team members found in Square. Add team members to your Square account to see them here.",
+      });
+    }
+
+    const barbers = profiles.map((p) => ({
+      id: p.id,
+      name: p.name,
+      specialty: p.specialty,
+      isAvailableToday: true, // Square manages availability via Bookings API
+    }));
+
+    return res.json(barbers);
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "teamMembers (barbers)", error);
   }
-
-  // Fallback: custom availability engine
-  console.log("📋 Using custom availability engine (Square Bookings not available or no serviceVariationId)");
-  const candidates = barberId
-    ? getAllBarbers().filter((b) => b.id === barberId)
-    : getAllBarbers();
-
-  const startDate = new Date();
-  const endDate = new Date();
-  endDate.setDate(endDate.getDate() + days);
-
-  const endDateStr = endDate.toISOString().split("T")[0];
-  const startDateStr = startDate.toISOString().split("T")[0];
-  const appointments = getAllAppointments();
-
-  const allSlots = candidates.flatMap((barber) => {
-    const overrides = getOverridesForDateRange(barber.id, startDateStr, endDateStr);
-    return computeAvailability(barber, service, appointments, startDate, endDate, overrides);
-  });
-
-  allSlots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
-
-  return res.json(allSlots);
 });
 
 // ============================================================================
@@ -357,100 +242,164 @@ app.get("/bookings/team-members", async (_req, res) => {
     console.log(`✅ Square Bookings: returned ${profiles.length} team member profiles`);
     return res.json(profiles);
   } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    console.log(`⚠️ Square Bookings teamMemberProfiles.list failed, falling back to local barbers: ${errMsg}`);
-    // Fallback: return our local barbers mapped to a similar shape
-    const barbers = getAllBarbers();
-    const fallback = barbers.map((b) => ({
-      teamMemberId: b.id,
-      displayName: b.name,
-      description: b.specialty,
-      isBookable: true,
-    }));
-    return res.json(fallback);
+    return squareErrorResponse(res, 502, "bookings.teamMemberProfiles.list", error);
   }
 });
 
 // ============================================================================
-// APPOINTMENTS (Square Bookings → local SQLite ledger)
+// AVAILABILITY (Square Bookings is source of truth)
 // ============================================================================
-// Track appointment lifecycle (requested → confirmed → completed → cancelled)
-// This is custom barber business logic, not Square's generic Bookings.
-app.get("/appointments", (_req, res) => {
-  res.json(getAllAppointments());
+app.get("/availability", async (req, res) => {
+  const querySchema = z.object({
+    serviceVariationId: z.string().min(1),
+    days: z.coerce.number().int().min(1).max(60).default(7),
+    teamMemberIds: z.string().optional(), // comma-separated
+  });
+
+  const parsed = querySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid query parameters",
+      details: parsed.error.flatten(),
+      hint: "serviceVariationId is required. Get IDs from GET /square/catalog or GET /services.",
+    });
+  }
+
+  const { serviceVariationId, days, teamMemberIds } = parsed.data;
+
+  try {
+    const startAt = new Date().toISOString();
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + days);
+    const endAt = endDate.toISOString();
+
+    const teamFilter = teamMemberIds
+      ? { any: teamMemberIds.split(",").map((id) => id.trim()) }
+      : undefined;
+
+    const result = await squareClient.bookings.searchAvailability({
+      query: {
+        filter: {
+          startAtRange: { startAt, endAt },
+          locationId: SQUARE_LOCATION_ID,
+          segmentFilters: [{
+            serviceVariationId,
+            teamMemberIdFilter: teamFilter,
+          }],
+        },
+      },
+    });
+
+    const availabilities = result.availabilities ?? [];
+    const slots: AvailabilitySlot[] = availabilities.map((a) => {
+      const segment = a.appointmentSegments?.[0];
+      const slotStart = new Date(a.startAt!);
+      const durationMinutes = segment?.durationMinutes ?? 60;
+      const slotEnd = new Date(slotStart.getTime() + durationMinutes * 60_000);
+
+      return {
+        teamMemberId: segment?.teamMemberId ?? "unknown",
+        serviceVariationId,
+        date: slotStart.toISOString().split("T")[0],
+        startAt: slotStart.toISOString(),
+        endAt: slotEnd.toISOString(),
+        durationMinutes,
+      };
+    });
+
+    slots.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+
+    console.log(`✅ Square Bookings: returned ${slots.length} availability slots`);
+    return res.json(slots);
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "bookings.searchAvailability", error);
+  }
+});
+
+// ============================================================================
+// APPOINTMENTS (Square Bookings is source of truth)
+// ============================================================================
+
+/** Map a Square booking object to our Appointment shape. */
+function mapBookingToAppointment(booking: Record<string, any>): Appointment {
+  const segment = booking.appointmentSegments?.[0];
+  let status: Appointment["status"] = "requested";
+  const squareStatus = (booking.status ?? "").toUpperCase();
+  if (squareStatus === "ACCEPTED" || squareStatus === "CONFIRMED") status = "confirmed";
+  else if (squareStatus === "COMPLETED") status = "completed";
+  else if (squareStatus === "CANCELLED_BY_CUSTOMER" || squareStatus === "CANCELLED_BY_SELLER" || squareStatus === "CANCELLED" || squareStatus === "DECLINED" || squareStatus === "NO_SHOW") status = "cancelled";
+
+  return {
+    id: booking.id ?? "",
+    customerId: booking.customerId ?? undefined,
+    teamMemberId: segment?.teamMemberId ?? undefined,
+    serviceId: segment?.serviceVariationId ?? "",
+    serviceVariationId: segment?.serviceVariationId ?? undefined,
+    startAt: booking.startAt ?? "",
+    status,
+    notes: booking.customerNote ?? undefined,
+  };
+}
+
+app.get("/appointments", async (_req, res) => {
+  try {
+    const result = await squareClient.bookings.list({
+      locationId: SQUARE_LOCATION_ID,
+    });
+    const bookings = result.data ?? [];
+    const appointments = bookings.map(mapBookingToAppointment);
+    return res.json(appointments);
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "bookings.list", error);
+  }
 });
 
 app.post("/appointments", async (req, res) => {
   const bodySchema = z.object({
-    customerId: z.string().min(1),
-    barberId: z.string().min(1),
-    serviceId: z.string().min(1),
+    serviceVariationId: z.string().min(1),
+    teamMemberId: z.string().min(1),
     startAt: z.string().datetime(),
-    notes: z.string().optional(),
-    squareCustomerId: z.string().optional(),
-    serviceVariationId: z.string().optional(),
+    customerId: z.string().optional(),
+    customerNote: z.string().optional(),
+    durationMinutes: z.number().int().positive().optional(),
   });
 
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
+    return res.status(400).json({
+      error: "Invalid payload",
+      details: parsed.error.flatten(),
+      hint: "Required: serviceVariationId, teamMemberId, startAt. Get IDs from GET /square/catalog and GET /square/team-members.",
+    });
   }
 
-  // Validate barber and service exist
-  const barber = getBarberById(parsed.data.barberId);
-  if (!barber) return res.status(404).json({ error: "Barber not found" });
+  const { serviceVariationId, teamMemberId, startAt, customerId, customerNote, durationMinutes } = parsed.data;
 
-  const service = getServiceById(parsed.data.serviceId);
-  if (!service) return res.status(404).json({ error: "Service not found" });
+  try {
+    const result = await squareClient.bookings.create({
+      booking: {
+        startAt,
+        locationId: SQUARE_LOCATION_ID,
+        customerId: customerId ?? undefined,
+        customerNote: customerNote ?? undefined,
+        appointmentSegments: [{
+          teamMemberId,
+          serviceVariationId,
+          durationMinutes: durationMinutes ?? undefined,
+        }],
+      },
+    });
 
-  // Check schedule conflict (with overrides)
-  const proposedStart = new Date(parsed.data.startAt);
-  const dateStr = proposedStart.toISOString().split("T")[0];
-  const overrides = getOverridesForDateRange(barber.id, dateStr, dateStr);
-  const conflict = hasScheduleConflict(barber, service, proposedStart, getAllAppointments(), overrides);
-  if (conflict.conflict) {
-    return res.status(409).json({ error: "Schedule conflict", reason: conflict.reason });
-  }
-
-  // Try creating booking in Square
-  let squareBookingId: string | undefined;
-  if (parsed.data.serviceVariationId) {
-    try {
-      const squareResult = await squareClient.bookings.create({
-        booking: {
-          startAt: parsed.data.startAt,
-          locationId: SQUARE_LOCATION_ID,
-          customerId: parsed.data.squareCustomerId,
-          appointmentSegments: [{
-            teamMemberId: parsed.data.barberId,
-            serviceVariationId: parsed.data.serviceVariationId,
-            durationMinutes: service.durationMinutes,
-          }],
-        },
-      });
-
-      squareBookingId = squareResult.booking?.id;
-      console.log(`✅ Square Booking created: ${squareBookingId}`);
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      console.log(`⚠️ Square Bookings create failed, saving locally only: ${errMsg}`);
+    const booking = result.booking;
+    if (!booking) {
+      return res.status(502).json({ error: "Square returned no booking object" });
     }
-  } else {
-    console.log("📋 No serviceVariationId provided, skipping Square Booking creation");
+
+    return res.status(201).json(mapBookingToAppointment(booking));
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "bookings.create", error);
   }
-
-  const appointment: Appointment = {
-    id: `appt-${countAppointments() + 1}`,
-    status: "requested",
-    ...parsed.data,
-    squareBookingId,
-  };
-  insertAppointment(appointment);
-
-  return res.status(201).json(appointment);
 });
-
-// ...existing code...
 
 app.patch("/appointments/:id", async (req, res) => {
   const bodySchema = z.object({
@@ -462,53 +411,49 @@ app.patch("/appointments/:id", async (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  const appointment = getAppointmentById(req.params.id);
-  if (!appointment) {
-    return res.status(404).json({ error: "Appointment not found" });
-  }
+  const bookingId = req.params.id;
 
-  // Cancel in Square if we have a Square booking and status is being set to cancelled
-  if (parsed.data.status === "cancelled" && appointment.status !== "cancelled" && appointment.squareBookingId) {
-    try {
+  try {
+    if (parsed.data.status === "cancelled") {
       // Fetch current booking to get version for optimistic concurrency
-      const existing = await squareClient.bookings.get({ bookingId: appointment.squareBookingId });
+      const existing = await squareClient.bookings.get({ bookingId });
       const bookingVersion = existing.booking?.version;
 
-      await squareClient.bookings.cancel({
-        bookingId: appointment.squareBookingId,
+      const result = await squareClient.bookings.cancel({
+        bookingId,
         bookingVersion,
       });
-      console.log(`✅ Square Booking cancelled: ${appointment.squareBookingId}`);
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      console.log(`⚠️ Square Bookings cancel failed, updating locally only: ${errMsg}`);
+
+      console.log(`✅ Square Booking cancelled: ${bookingId}`);
+      return res.json(mapBookingToAppointment(result.booking ?? { id: bookingId, status: "CANCELLED_BY_SELLER" }));
     }
+
+    // For non-cancel status updates, use bookings.update
+    const existing = await squareClient.bookings.get({ bookingId });
+    const bookingVersion = existing.booking?.version;
+
+    const squareStatus =
+      parsed.data.status === "confirmed" ? "ACCEPTED" as const :
+      parsed.data.status === "completed" ? "ACCEPTED" as const :
+      "PENDING" as const;
+
+    const result = await squareClient.bookings.update({
+      bookingId,
+      booking: {
+        version: bookingVersion,
+        status: squareStatus,
+      },
+    });
+
+    return res.json(mapBookingToAppointment(result.booking ?? existing.booking ?? { id: bookingId }));
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, `bookings.update (${parsed.data.status})`, error);
   }
-
-  updateAppointmentStatus(req.params.id, parsed.data.status as AppointmentStatus);
-
-  // Auto-record cancellation note in ledger
-  if (parsed.data.status === "cancelled" && appointment.status !== "cancelled") {
-    const ledgerEntry: LedgerEntry = {
-      id: `ledger-${countLedgerEntries() + 1}`,
-      customerId: appointment.customerId,
-      appointmentId: appointment.id,
-      type: "cancellation_fee",
-      amount: 0,
-      description: `Appointment ${appointment.id} cancelled`,
-      createdAt: new Date().toISOString(),
-    };
-    insertLedgerEntry(ledgerEntry);
-  }
-
-  return res.json({ ...appointment, status: parsed.data.status });
 });
 
 // ============================================================================
 // CUSTOMERS (Square is source of truth)
 // ============================================================================
-// Customers are synced to Square via this endpoint.
-// In production, POST here triggers a sync to Square's Customers API.
 app.post("/customers/sync", async (req, res) => {
   const bodySchema = z.object({
     id: z.string(),
@@ -523,9 +468,6 @@ app.post("/customers/sync", async (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  // TODO: In production, call customersApi.createCustomer() or updateCustomer()
-  // to sync this customer to Square.
-
   return res.status(201).json({
     message: "Customer sync queued for Square",
     squareCustomerId: `cust_${parsed.data.id}`,
@@ -536,7 +478,6 @@ app.post("/customers/sync", async (req, res) => {
 // ============================================================================
 // PAYMENTS (Square is source of truth)
 // ============================================================================
-// Process payments via Square's Payments API using a nonce from the In-App Payments SDK.
 app.post("/payments/process", async (req, res) => {
   const bodySchema = z.object({
     nonce: z.string().min(1),
@@ -553,11 +494,10 @@ app.post("/payments/process", async (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  const { nonce, amount, currency, appointmentId, customerId, type, description } = parsed.data;
+  const { nonce, amount, currency, appointmentId } = parsed.data;
   const idempotencyKey = `${appointmentId ?? "anon"}-${Date.now()}`;
 
   try {
-    const locationId = SQUARE_LOCATION_ID;
     const payment = await squareClient.payments.create({
       sourceId: nonce,
       idempotencyKey,
@@ -565,24 +505,9 @@ app.post("/payments/process", async (req, res) => {
         amount: BigInt(Math.round(amount * 100)),
         currency: currency as Currency,
       },
-      locationId,
+      locationId: SQUARE_LOCATION_ID,
       note: appointmentId ? `Appointment: ${appointmentId}` : undefined,
     });
-
-    // Auto-record ledger entry on successful payment
-    if (customerId && payment.payment?.id) {
-      const ledgerEntry: LedgerEntry = {
-        id: `ledger-${countLedgerEntries() + 1}`,
-        customerId,
-        appointmentId,
-        type: (type ?? "service_payment") as LedgerEntryType,
-        amount,
-        description: description ?? `Payment for ${type ?? "service"}`,
-        squarePaymentId: payment.payment.id,
-        createdAt: new Date().toISOString(),
-      };
-      insertLedgerEntry(ledgerEntry);
-    }
 
     return res.status(201).json({
       ok: true,
@@ -592,17 +517,15 @@ app.post("/payments/process", async (req, res) => {
       currency,
       appointmentId,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return res.status(502).json({
       ok: false,
       message: "Payment processing failed",
-      errorType: error?.name ?? "UnknownError",
-      errorMessage: error?.message ?? "No message",
+      error: squareErrorMessage(error),
     });
   }
 });
 
-// Payment status lookup
 app.get("/payments/:squarePaymentId", async (req, res) => {
   try {
     const payment = await squareClient.payments.get({ paymentId: req.params.squarePaymentId });
@@ -612,24 +535,108 @@ app.get("/payments/:squarePaymentId", async (req, res) => {
       status: payment.payment?.status,
       amount: payment.payment?.amountMoney,
     });
-  } catch (error: any) {
-    return res.status(502).json({
-      ok: false,
-      message: "Payment lookup failed",
-      errorType: error?.name ?? "UnknownError",
-      errorMessage: error?.message ?? "No message",
-    });
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "payments.get", error);
   }
 });
 
 // ============================================================================
-// REWARDS (Azure-owned: custom barbershop loyalty logic)
+// CUSTOMER LEDGER & SUMMARY (Square Payments is source of truth)
 // ============================================================================
-// Rewards are custom to this barbershop: points for visits, tiers, redemptions.
-// Square has a Loyalty API, but we use custom logic for barber-specific rewards.
+app.get("/customers/:customerId/ledger", async (req, res) => {
+  const customerId = req.params.customerId;
+
+  try {
+    const result = await squareClient.payments.list({
+      locationId: SQUARE_LOCATION_ID,
+    });
+    const allPayments = result.data ?? [];
+
+    // Filter by customer ID
+    const customerPayments = allPayments.filter((p) => p.customerId === customerId);
+
+    const entries: LedgerEntry[] = customerPayments.map((p) => {
+      let type: LedgerEntryType = "service_payment";
+      const note = (p.note ?? "").toLowerCase();
+      if (note.includes("holding")) type = "holding_fee";
+      else if (note.includes("refund") || p.status === "REFUNDED") type = "refund";
+      else if (note.includes("cancel")) type = "cancellation_fee";
+
+      return {
+        id: p.id ?? "",
+        customerId,
+        appointmentId: p.orderId ?? undefined,
+        type,
+        amount: p.amountMoney?.amount ? Number(p.amountMoney.amount) / 100 : 0,
+        description: p.note ?? `Payment ${p.id}`,
+        squarePaymentId: p.id,
+        createdAt: p.createdAt ?? new Date().toISOString(),
+      };
+    });
+
+    const totalPaid = entries
+      .filter((e) => e.type === "holding_fee" || e.type === "service_payment")
+      .reduce((sum, e) => sum + e.amount, 0);
+
+    const totalRefunded = entries
+      .filter((e) => e.type === "refund")
+      .reduce((sum, e) => sum + e.amount, 0);
+
+    return res.json({
+      customerId,
+      entries,
+      summary: { totalPaid, totalRefunded },
+    });
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "payments.list (ledger)", error);
+  }
+});
+
+app.get("/customers/:customerId/summary", async (req, res) => {
+  const customerId = req.params.customerId;
+
+  try {
+    const result = await squareClient.payments.list({
+      locationId: SQUARE_LOCATION_ID,
+    });
+    const allPayments = result.data ?? [];
+    const customerPayments = allPayments.filter((p) => p.customerId === customerId);
+
+    const totalSpent = customerPayments
+      .filter((p) => p.status === "COMPLETED")
+      .reduce((sum, p) => sum + (p.amountMoney?.amount ? Number(p.amountMoney.amount) / 100 : 0), 0);
+
+    const recentPayments: LedgerEntry[] = customerPayments.slice(0, 10).map((p) => ({
+      id: p.id ?? "",
+      customerId,
+      type: "service_payment" as LedgerEntryType,
+      amount: p.amountMoney?.amount ? Number(p.amountMoney.amount) / 100 : 0,
+      description: p.note ?? `Payment ${p.id}`,
+      squarePaymentId: p.id,
+      createdAt: p.createdAt ?? new Date().toISOString(),
+    }));
+
+    const summary: CustomerSummary = {
+      customerId,
+      totalPayments: customerPayments.length,
+      totalSpent,
+      recentPayments,
+    };
+
+    return res.json(summary);
+  } catch (error: unknown) {
+    return squareErrorResponse(res, 502, "payments.list (summary)", error);
+  }
+});
+
+// ============================================================================
+// REWARDS (Placeholder — custom barbershop loyalty logic)
+// ============================================================================
 app.get("/rewards/summary", (_req, res) => {
-  // TODO: In production, fetch from Azure SQL rewards table
-  res.json(mockRewards);
+  res.json({
+    message: "Rewards system placeholder. Wire to Square Loyalty API or custom logic.",
+    placeholder: true,
+  });
 });
 
 app.post("/rewards/ledger", (req, res) => {
@@ -645,8 +652,6 @@ app.post("/rewards/ledger", (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  // TODO: In production, append immutable ledger entry to Azure SQL
-
   return res.status(201).json({
     message: "Reward ledger entry created",
     ...parsed.data,
@@ -657,8 +662,6 @@ app.post("/rewards/ledger", (req, res) => {
 // ============================================================================
 // SQUARE WEBHOOK HANDLER
 // ============================================================================
-// Receive events from Square (payments, orders, customers) and trigger
-// barbershop-specific workflows (update appointment status, award points, etc.).
 app.post("/square/webhooks", (req, res) => {
   const signature = req.header("x-square-hmac-sha256");
 
@@ -666,22 +669,15 @@ app.post("/square/webhooks", (req, res) => {
     return res.status(400).json({ error: "Missing Square signature header" });
   }
 
-  // TODO: Verify signature using SQUARE_WEBHOOK_SIGNATURE_KEY
-
   const eventType = req.body?.type;
   const data = req.body?.data;
 
-  // Route to specific handlers based on Square event type
   if (eventType === "payment.created" || eventType === "payment.updated") {
     console.log("📱 Square payment event:", eventType, data);
-    // TODO: Call /rewards/ledger to award points
-    // TODO: Call /appointments/:id PATCH to mark as completed
   } else if (eventType === "order.created" || eventType === "order.updated") {
     console.log("📦 Square order event:", eventType, data);
-    // TODO: Sync order status back to appointment
   } else if (eventType === "customer.created" || eventType === "customer.updated") {
     console.log("👤 Square customer event:", eventType, data);
-    // TODO: Store Square customer ID mapping in Azure SQL
   }
 
   return res.status(202).json({
@@ -692,63 +688,8 @@ app.post("/square/webhooks", (req, res) => {
 });
 
 // ============================================================================
-// CUSTOMER LEDGER & SUMMARY
+// CRM NOTES (Placeholder — barbershop-specific customer history)
 // ============================================================================
-app.get("/customers/:customerId/ledger", (req, res) => {
-  const customerId = req.params.customerId;
-  const entries = getLedgerEntriesByCustomer(customerId);
-
-  const totalPaid = entries
-    .filter((e) => e.type === "holding_fee" || e.type === "service_payment")
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  const totalOwed = entries
-    .filter((e) => e.type === "refund")
-    .reduce((sum, e) => sum - e.amount, 0);
-
-  return res.json({
-    customerId,
-    entries,
-    summary: {
-      totalPaid,
-      totalOwed,
-    },
-  });
-});
-
-app.get("/customers/:customerId/summary", (req, res) => {
-  const customerId = req.params.customerId;
-  const appointments = getAppointmentsByCustomer(customerId);
-  const ledgerEntries = getLedgerEntriesByCustomer(customerId);
-
-  const totalAppointments = appointments.length;
-  const servicesCompleted = appointments.filter((a) => a.status === "completed").length;
-  const activeAppointments = appointments.filter((a) => a.status === "requested" || a.status === "confirmed").length;
-
-  const totalSpent = ledgerEntries
-    .filter((e) => e.type === "holding_fee" || e.type === "service_payment")
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  const holdingFeesPaid = ledgerEntries
-    .filter((e) => e.type === "holding_fee")
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  const summary: CustomerSummary = {
-    customerId,
-    totalAppointments,
-    totalSpent,
-    holdingFeesPaid,
-    servicesCompleted,
-    activeAppointments,
-  };
-
-  return res.json(summary);
-});
-
-// ============================================================================
-// CRM NOTES (Azure-owned: barbershop-specific customer history)
-// ============================================================================
-// Store internal notes about customers: no-show status, preferences, follow-ups.
 app.post("/crm/notes", (req, res) => {
   const bodySchema = z.object({
     customerId: z.string(),
@@ -761,8 +702,6 @@ app.post("/crm/notes", (req, res) => {
     return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten() });
   }
 
-  // TODO: In production, append to Azure SQL crm_notes table
-
   return res.status(201).json({
     message: "CRM note created",
     ...parsed.data,
@@ -774,14 +713,11 @@ app.post("/crm/notes", (req, res) => {
 // Start server
 // ============================================================================
 app.listen(port, () => {
-  // eslint-disable-next-line no-console
   console.log(`🚀 The Master Barber Experience API listening on port ${port}`);
-  // eslint-disable-next-line no-console
   console.log(`
-Architecture:
-  Square owns:     Customers, Catalog/Services, Payments, Orders
-  Azure owns:      Scheduling, Appointments, Rewards Ledger, CRM
-  iOS uses:        Square In-App Payments SDK for card entry
-  Webhooks from:   Square → this API → trigger reward/appointment updates
+Architecture: Square-only (no local database)
+  Square owns:  Customers, Catalog/Services, Payments, Bookings, Team Members
+  iOS uses:     Square In-App Payments SDK for card entry
+  Webhooks:     Square → this API → trigger reward/appointment updates
   `);
 });

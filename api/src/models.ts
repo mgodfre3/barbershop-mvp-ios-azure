@@ -8,54 +8,28 @@ export type Service = {
   price: number;
 };
 
-// 0 = Sunday, 1 = Monday, ..., 6 = Saturday
-export type DayOfWeek = 0 | 1 | 2 | 3 | 4 | 5 | 6;
-
-export type DaySchedule = {
-  day: DayOfWeek;
-  startHour: number; // 0-23
-  endHour: number;   // 0-23, must be > startHour
-};
-
-export type TimeOffEntry = {
-  id: string;
-  barberId: string;
-  date: string;      // YYYY-MM-DD
-  reason?: string;
-};
-
-export type ScheduleOverride = {
-  id: string;
-  barberId: string;
-  date: string;      // YYYY-MM-DD
-  startHour: number; // 0-23; if startHour === endHour === 0, barber is off
-  endHour: number;   // 0-24
-  reason?: string;
-};
-
 export type Barber = {
   id: string;
   name: string;
   specialty: string;
-  schedule: DaySchedule[];
-  timeOff: TimeOffEntry[];
+  isAvailableToday?: boolean;
 };
 
 export type Appointment = {
   id: string;
-  customerId: string;
-  barberId: string;
+  customerId?: string;
+  teamMemberId?: string;
   serviceId: string;
+  serviceVariationId?: string;
   startAt: string;
   status: AppointmentStatus;
   notes?: string;
-  squareBookingId?: string;
 };
 
 export type AvailabilitySlot = {
-  barberId: string;
-  barberName: string;
-  serviceId: string;
+  teamMemberId: string;
+  teamMemberName?: string;
+  serviceVariationId: string;
   date: string;       // YYYY-MM-DD
   startAt: string;    // ISO 8601
   endAt: string;      // ISO 8601
@@ -67,13 +41,6 @@ export type RewardSummary = {
   pointsBalance: number;
   pointsToNextReward: number;
   tier: string;
-};
-
-export const mockRewards: RewardSummary = {
-  customerId: "customer-1",
-  pointsBalance: 120,
-  pointsToNextReward: 30,
-  tier: "Gold"
 };
 
 export type LedgerEntryType = "holding_fee" | "service_payment" | "refund" | "cancellation_fee";
@@ -91,9 +58,7 @@ export type LedgerEntry = {
 
 export type CustomerSummary = {
   customerId: string;
-  totalAppointments: number;
+  totalPayments: number;
   totalSpent: number;
-  holdingFeesPaid: number;
-  servicesCompleted: number;
-  activeAppointments: number;
+  recentPayments: LedgerEntry[];
 };
